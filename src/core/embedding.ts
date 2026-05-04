@@ -1,27 +1,61 @@
 /**
- * Embedding Service
- * Ported from production Ruby implementation (embedding_service.rb, 190 LOC)
+ * Embedding Service (Vertex AI Gemini fork)
  *
- * OpenAI text-embedding-3-large at 1536 dimensions.
+ * Patched from upstream (which uses OpenAI text-embedding-3-large at 1536d)
+ * to Vertex AI gemini-embedding-001 at 1536d (matryoshka). Auth via ADC —
+ * no API key required when running on GCE / under a service account that
+ * has roles/aiplatform.user.
+ *
+ * Env:
+ *   GBRAIN_VERTEX_PROJECT   GCP project id (or GOOGLE_CLOUD_PROJECT)
+ *   GBRAIN_VERTEX_LOCATION  Vertex region (default: us-central1)
+ *
  * Retry with exponential backoff (4s base, 120s cap, 5 retries).
  * 8000 character input truncation.
  */
 
-import OpenAI from 'openai';
+import { GoogleGenAI } from '@google/genai';
 
-const MODEL = 'text-embedding-3-large';
+const MODEL = 'gemini-embedding-001';
 const DIMENSIONS = 1536;
 const MAX_CHARS = 8000;
 const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 4000;
 const MAX_DELAY_MS = 120000;
 const BATCH_SIZE = 100;
+const REQUEST_CONCURRENCY = 10;
 
-let client: OpenAI | null = null;
+function getProject(): string {
+  return (
+    process.env.GBRAIN_VERTEX_PROJECT ||
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    ''
+  );
+}
 
-function getClient(): OpenAI {
+function getLocation(): string {
+  return process.env.GBRAIN_VERTEX_LOCATION || 'us-central1';
+}
+
+export function isEmbeddingAvailable(): boolean {
+  return Boolean(getProject());
+}
+
+let client: GoogleGenAI | null = null;
+
+function getClient(): GoogleGenAI {
   if (!client) {
-    client = new OpenAI();
+    const project = getProject();
+    if (!project) {
+      throw new Error(
+        'GBRAIN_VERTEX_PROJECT (or GOOGLE_CLOUD_PROJECT) must be set for Vertex AI embedding',
+      );
+    }
+    client = new GoogleGenAI({
+      vertexai: true,
+      project,
+      location: getLocation(),
+    });
   }
   return client;
 }
@@ -48,10 +82,9 @@ export async function embedBatch(
   const truncated = texts.map(t => t.slice(0, MAX_CHARS));
   const results: Float32Array[] = [];
 
-  // Process in batches of BATCH_SIZE
   for (let i = 0; i < truncated.length; i += BATCH_SIZE) {
     const batch = truncated.slice(i, i + BATCH_SIZE);
-    const batchResults = await embedBatchWithRetry(batch);
+    const batchResults = await embedSubBatchWithConcurrency(batch);
     results.push(...batchResults);
     options.onBatchComplete?.(results.length, truncated.length);
   }
@@ -59,40 +92,72 @@ export async function embedBatch(
   return results;
 }
 
-async function embedBatchWithRetry(texts: string[]): Promise<Float32Array[]> {
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      const response = await getClient().embeddings.create({
-        model: MODEL,
-        input: texts,
-        dimensions: DIMENSIONS,
-      });
+/**
+ * Vertex AI Gemini embedContent processes one input per call, so we fan out
+ * single-item requests with bounded concurrency to approximate batch throughput
+ * while respecting the per-project QPS quota.
+ */
+async function embedSubBatchWithConcurrency(texts: string[]): Promise<Float32Array[]> {
+  const results: Float32Array[] = new Array(texts.length);
 
-      // Sort by index to maintain order
-      const sorted = response.data.sort((a, b) => a.index - b.index);
-      return sorted.map(d => new Float32Array(d.embedding));
-    } catch (e: unknown) {
-      if (attempt === MAX_RETRIES - 1) throw e;
-
-      // Check for rate limit with Retry-After header
-      let delay = exponentialDelay(attempt);
-
-      if (e instanceof OpenAI.APIError && e.status === 429) {
-        const retryAfter = e.headers?.['retry-after'];
-        if (retryAfter) {
-          const parsed = parseInt(retryAfter, 10);
-          if (!isNaN(parsed)) {
-            delay = parsed * 1000;
-          }
-        }
-      }
-
-      await sleep(delay);
+  for (let i = 0; i < texts.length; i += REQUEST_CONCURRENCY) {
+    const slice = texts.slice(i, i + REQUEST_CONCURRENCY);
+    const sliceResults = await Promise.all(
+      slice.map((t, j) =>
+        embedSingleWithRetry(t).then(emb => ({ idx: i + j, emb })),
+      ),
+    );
+    for (const { idx, emb } of sliceResults) {
+      results[idx] = emb;
     }
   }
 
-  // Should not reach here
+  return results;
+}
+
+async function embedSingleWithRetry(text: string): Promise<Float32Array> {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const response = await getClient().models.embedContent({
+        model: MODEL,
+        contents: text,
+        config: {
+          outputDimensionality: DIMENSIONS,
+          taskType: 'RETRIEVAL_DOCUMENT',
+        },
+      });
+
+      const values = response.embeddings?.[0]?.values;
+      if (!values || values.length === 0) {
+        throw new Error('Vertex embedding response missing values');
+      }
+      if (values.length !== DIMENSIONS) {
+        throw new Error(
+          `Expected ${DIMENSIONS}-dim embedding, got ${values.length}`,
+        );
+      }
+      return new Float32Array(values);
+    } catch (e: unknown) {
+      if (attempt === MAX_RETRIES - 1) throw e;
+
+      const status = errorStatus(e);
+      if (status && status >= 400 && status < 500 && status !== 429) {
+        throw e;
+      }
+
+      await sleep(exponentialDelay(attempt));
+    }
+  }
+
   throw new Error('Embedding failed after all retries');
+}
+
+function errorStatus(e: unknown): number | undefined {
+  if (e && typeof e === 'object' && 'status' in e) {
+    const s = (e as { status?: unknown }).status;
+    if (typeof s === 'number') return s;
+  }
+  return undefined;
 }
 
 function exponentialDelay(attempt: number): number {
@@ -107,16 +172,11 @@ function sleep(ms: number): Promise<void> {
 export { MODEL as EMBEDDING_MODEL, DIMENSIONS as EMBEDDING_DIMENSIONS };
 
 /**
- * v0.20.0 Cathedral II Layer 8 (D1): USD cost per 1k tokens for
- * text-embedding-3-large. Used by `gbrain sync --all` cost preview and
- * the reindex-code backfill command to surface expected spend before
- * the agent/user accepts an expensive operation.
- *
- * Value: $0.00013 / 1k tokens as of 2026. Update when OpenAI changes
- * pricing. Single source of truth — every cost-preview surface reads
- * this constant, so a pricing change is a one-line edit.
+ * USD cost per 1k input tokens for gemini-embedding-001 via Vertex AI.
+ * Single source of truth — every cost-preview surface reads this constant,
+ * so a pricing change is a one-line edit. Update when GCP pricing changes.
  */
-export const EMBEDDING_COST_PER_1K_TOKENS = 0.00013;
+export const EMBEDDING_COST_PER_1K_TOKENS = 0.00015;
 
 /** Compute USD cost estimate for embedding `tokens` at current model rate. */
 export function estimateEmbeddingCostUsd(tokens: number): number {
