@@ -102,6 +102,9 @@ export function getChatFallbackChain(): string[] {
  * Replaces scattered `!process.env.OPENAI_API_KEY` checks (Codex C3).
  */
 export function isAvailable(touchpoint: TouchpointKind): boolean {
+  // Fork (vertex-embedding): GBRAIN_VERTEX_PROJECT / GOOGLE_CLOUD_PROJECT short-circuits embedding availability,
+  // since the patched src/core/embedding.ts bypasses gateway routing and uses @google/genai with Vertex AI ADC directly.
+  if (touchpoint === "embedding" && (process.env.GBRAIN_VERTEX_PROJECT || process.env.GOOGLE_CLOUD_PROJECT)) return true;
   if (!_config) return false;
   try {
     const modelStr =
