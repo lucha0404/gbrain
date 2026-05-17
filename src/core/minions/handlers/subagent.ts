@@ -481,6 +481,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
           // lookup at recipeIdFromModel(), capability gate).
           model: stripProviderPrefix(model),
           max_tokens: 4096,
+          thinking: { type: 'disabled' } as any,  // 2026-05-17 safety belt: DeepSeek /anthropic packs thinking sig into tool_use_id (max observed 2632/2704 btree limit), risk multi-turn HTTP 400 at scale
           system: [
             { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
           ] as any,
