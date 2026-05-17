@@ -855,7 +855,6 @@ Two reasons max, one phrase each.`;
     model: verdictModel,
     max_tokens: 200,
     thinking: { type: 'disabled' } as any,  // 2026-05-17: DeepSeek /anthropic 默认 thinking=enabled 吃光 judge max_tokens 致 JSON 截断 — backport of upstream PR #596
-    thinking: { type: 'disabled' } as any,  // 2026-05-17: DeepSeek /anthropic 默认 thinking=enabled 吃光 judge max_tokens 致 JSON 截断 — backport of upstream PR #596
     system: sys,
     messages: [{ role: 'user', content: `Transcript ${t.basename}:\n\n${trimmed}` }],
   });
