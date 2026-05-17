@@ -90,10 +90,18 @@ export function isAnthropicProvider(modelString: string): boolean {
   if (colon !== -1) {
     return trimmed.slice(0, colon).trim().toLowerCase() === 'anthropic';
   }
-  // Bare model id: known Anthropic models start with `claude-`. Conservative:
-  // we'd rather warn-on-Anthropic-typo than silently route gpt-5 to the
-  // subagent loop.
-  return trimmed.toLowerCase().startsWith('claude-');
+  // Bare model id: Anthropic-compatible providers we trust (gbrain fork 2026-05-18):
+  // - claude-* (Anthropic official)
+  // - kimi-* (Moonshot via /anthropic compat endpoint, model names like kimi-k2.6)
+  // - deepseek-* (DeepSeek via /anthropic compat endpoint, model names like deepseek-v4-flash)
+  // All speak the Anthropic Messages API protocol when routed through their
+  // respective /anthropic endpoints. Conservative on other prefixes (gpt-*,
+  // gemini-*, etc.) — we'd rather warn-on-typo than silently route a
+  // genuinely non-Anthropic provider to the subagent loop.
+  const lower = trimmed.toLowerCase();
+  return lower.startsWith('claude-')
+      || lower.startsWith('kimi-')
+      || lower.startsWith('deepseek-');
 }
 
 const _subagentTierWarningsEmitted = new Set<string>();
