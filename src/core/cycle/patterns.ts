@@ -74,14 +74,9 @@ export async function runPhasePatterns(
         'skills/_brain-filing-rules.json missing dream_synthesize_paths.globs'));
     }
 
-    // v0.33.x fork patch (2026-05-17): inject existing patterns universe so
-    // LLM dedups against the actual catalog instead of relying on unreliable
-    // `search` tool calls. Root cause: LLM emits paraphrases when it can't see
-    // existing slugs (e.g. "stale-state-friction" vs "residual-state-inertia").
-    const existingPatterns = await gatherExistingPatterns(engine);
     const queue = new MinionQueue(engine);
     const data: SubagentHandlerData = {
-      prompt: buildPatternsPrompt(reflections, existingPatterns, config.minEvidence),
+      prompt: buildPatternsPrompt(reflections, config.minEvidence),
       model: config.model,
       max_turns: 30,
       allowed_slug_prefixes: allowedSlugPrefixes,
@@ -192,73 +187,31 @@ async function gatherReflections(
   }));
 }
 
-async function gatherExistingPatterns(
-  engine: BrainEngine,
-): Promise<ReflectionRef[]> {
-  const rows = await engine.executeRaw<{ slug: string; title: string | null; compiled_truth: string | null }>(
-    `SELECT slug, title, compiled_truth
-       FROM pages
-      WHERE slug LIKE 'wiki/personal/patterns/%'
-        AND deleted_at IS NULL
-      ORDER BY slug ASC
-      LIMIT 200`,
-  );
-  return rows.map(r => ({
-    slug: r.slug,
-    title: r.title ?? r.slug,
-    excerpt: (r.compiled_truth ?? '').slice(0, 300),
-  }));
-}
-
 // ── Prompt ────────────────────────────────────────────────────────────
 
-function buildPatternsPrompt(
-  reflections: ReflectionRef[],
-  existingPatterns: ReflectionRef[],
-  minEvidence: number,
-): string {
+function buildPatternsPrompt(reflections: ReflectionRef[], minEvidence: number): string {
   const today = new Date().toISOString().slice(0, 10);
   const corpus = reflections
     .map((r, i) => `### ${i + 1}. [[${r.slug}]] — ${r.title}\n${r.excerpt}`)
     .join('\n\n---\n\n');
 
-  const existingCatalog = existingPatterns.length === 0
-    ? '(none yet — this is the first cycle)'
-    : existingPatterns
-        .map(p => `- \`${p.slug}\` — ${p.title}\n    ${(p.excerpt || '').replace(/\n+/g, ' ').slice(0, 200)}…`)
-        .join('\n');
-
   return `You are surfacing recurring themes across the user's recent reflections.
-
-EXISTING PATTERNS UNIVERSE
-The following pattern pages ALREADY exist. Treat this list as the source of truth for what themes are already named. Your default action MUST be to UPDATE an existing slug, not to create a new one.
-
-${existingCatalog}
-
-DEDUP POLICY (hard rule — violating this is the most common failure mode)
-- For EACH theme you detect, BEFORE writing anything, output a 1-line "DEDUP CHECK":
-    "Candidate theme: <name>. Closest existing slug: <slug>. Overlap verdict: <merge|distinct + reason>."
-- "merge" verdict (overlap >= 60% semantic): you MUST call put_page with the EXISTING slug. Update its compiled_truth + cite the new reflections.
-- "distinct" verdict: you may create a new slug, but ONLY if the theme is genuinely novel (not a synonym/paraphrase/finer-grain restatement of an existing one).
-- NEVER emit two slugs that are paraphrases of each other. Examples of WRONG: "stale-state-friction" + "residual-state-inertia" (same theme), "alignment-gap" + "gap-detection-intention-reality" (same theme), "frame-switch-strategy" + "indirect-victory-through-frame-change" (same mechanism).
-- If you are unsure → choose merge (update existing). Over-emit is worse than under-emit.
 
 OUTPUT POLICY
 - Only name a pattern if it appears in at least ${minEvidence} DISTINCT reflections.
 - Each pattern page MUST cite the reflections that constitute its evidence (use [[wiki/personal/reflections/...]] wikilinks).
-- Pattern slug format: \`wiki/personal/patterns/<topic-slug>\` (lowercase alphanumeric + hyphens; no underscores, no extension, no date, no hash suffix).
+- Use \`search\` to check whether a similar pattern page already exists; if yes, update it (use the same slug). If no, create a new one.
+- Pattern slug format: \`wiki/personal/patterns/<topic-slug>\` (lowercase alphanumeric + hyphens; no underscores, no extension, no date).
 - A "pattern" is a recurring theme, anxiety, decision pattern, relationship dynamic, or self-knowledge motif. NOT a single insight. NOT a list of unrelated topics.
 
 DO NOT WRITE
 - A "patterns from today" digest (that's the dream-cycle-summaries page; not your job).
 - Patterns with <${minEvidence} reflections cited.
 - Anything outside wiki/personal/patterns/.
-- Hash-suffixed slugs (e.g. \`-1bcc72\`) — if you can't match an existing slug, that's a signal your candidate overlaps an existing one; merge instead.
 
 CONTEXT
 - Today: ${today}
 - Reflections in scope: ${reflections.length}
-- Existing patterns: ${existingPatterns.length}
 
 REFLECTIONS
 ${corpus}
