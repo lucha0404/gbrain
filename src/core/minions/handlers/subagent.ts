@@ -133,7 +133,16 @@ export function makeSubagentHandler(deps: SubagentDeps) {
   // lives at sdk.messages.create. Assigning sdk.messages directly gets the
   // right object; JS method-call semantics preserve `this` at the call
   // site (subagent.ts invokes client.create(...) with client === sdk.messages).
-  const makeAnthropic = deps.makeAnthropic ?? (() => new Anthropic());
+  const makeAnthropic = deps.makeAnthropic ?? (() => {
+    // 2026-05-21 fork patch: @anthropic-ai/sdk@0.30 hardcodes /v1/messages
+    // path internally. ANTHROPIC_BASE_URL must NOT end with /v1 for this SDK
+    // (else gets /v1/v1/messages 404). Vercel @ai-sdk/anthropic (used by
+    // gateway.ts for dream cycle) needs /v1 suffix — so /etc/gbrain/llm.env
+    // BASE_URL keeps /v1 for that path, and we strip it here for this SDK.
+    // Mirrors upstream Issue #1250 (still open as of 2026-05-21, no PR merged).
+    const envBaseUrl = process.env.ANTHROPIC_BASE_URL?.replace(/\/v1\/?$/, "");
+    return envBaseUrl ? new Anthropic({ baseURL: envBaseUrl }) : new Anthropic();
+  });
   const client: MessagesClient = deps.client ?? makeAnthropic().messages;
   const config = deps.config ?? loadConfig() ?? ({ engine: 'postgres' } as GBrainConfig);
   const rateLeaseKey = deps.rateLeaseKey ?? DEFAULT_RATE_KEY;
