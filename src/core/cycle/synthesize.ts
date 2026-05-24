@@ -641,7 +641,7 @@ export interface JudgeClient {
 
 function makeHaikuClient(): JudgeClient | null {
   if (!process.env.ANTHROPIC_API_KEY) return null;
-  const client = new Anthropic();
+  const __b = process.env.ANTHROPIC_BASE_URL?.replace(/\/v1\/?$/, ""); const client = __b ? new Anthropic({ baseURL: __b }) : new Anthropic();
   return { create: client.messages.create.bind(client.messages) };
 }
 

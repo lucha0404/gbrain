@@ -455,7 +455,7 @@ export async function runEvalLongMemEval(args: string[], runOpts: RunOpts = {}):
 
   // Wrap Anthropic SDK so its `.messages.create` shape matches ThinkLLMClient.
   // Same pattern as src/core/think/index.ts:247-249.
-  const realClient = new Anthropic();
+  const __b = process.env.ANTHROPIC_BASE_URL?.replace(/\/v1\/?$/, ""); const realClient = __b ? new Anthropic({ baseURL: __b }) : new Anthropic();
   const client: ThinkLLMClient = runOpts.client ?? {
     create: (params, callOpts) => realClient.messages.create(params, callOpts),
   };
