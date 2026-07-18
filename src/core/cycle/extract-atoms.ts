@@ -576,7 +576,12 @@ export async function runPhaseExtractAtoms(
                 WHERE source_id = $2 AND slug = $3 AND deleted_at IS NULL`,
               [item.contentHash.slice(0, 16), sourceId, item.slug],
             );
-          } catch { /* fail-soft: page stays rediscoverable */ }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[extract_atoms] zero-yield stamp failed for ${item.slug}: ${msg}`);
+            // Fail-soft: the page stays rediscoverable and backlog recounting
+            // keeps the drain result from reporting a false completion.
+          }
         }
         if (item.kind === 'transcript') transcriptsProcessed++;
         else pagesProcessed++;
