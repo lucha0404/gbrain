@@ -144,4 +144,14 @@ describe('orchestrator entry-point wrap (CV11 single-point classification)', () 
     expect(src).toContain("Error [");
     expect(src).toContain('Hint:');
   });
+
+  test('commands/brainstorm.ts resolves chat and judge models from the DB plane', async () => {
+    const src = await Bun.file('src/commands/brainstorm.ts').text();
+    expect(src).toContain('engine.getConfig(key)');
+    expect(src).toContain("readDbModel('chat_model')");
+    expect(src).toContain("readDbModel('models.brainstorm.judge')");
+    expect(src).toContain('failed to read DB config');
+    expect(src).toContain('runBrainstorm(engine, effectiveConfig');
+    expect(src).toContain('judgeModel: effectiveJudgeModel');
+  });
 });

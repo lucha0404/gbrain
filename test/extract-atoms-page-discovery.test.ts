@@ -478,4 +478,26 @@ describe('#2144: zero-yield tombstone', () => {
     const discovered = await discoverExtractablePages(engine, 'default');
     expect(discovered.map((d) => d.slug)).toContain('article/transient-failure');
   });
+
+  test('invalid JSON does NOT stamp — page stays retryable', async () => {
+    await seedPage({ slug: 'article/invalid-json', type: 'article' });
+    await runPhaseExtractAtoms(engine, { _transcripts: [], _chat: stubChat('not json') });
+    const rows = await engine.executeRaw<{ scan: string | null }>(
+      `SELECT frontmatter->>'atoms_scan_hash' AS scan FROM pages WHERE slug = 'article/invalid-json'`,
+    );
+    expect(rows[0].scan).toBeNull();
+    const discovered = await discoverExtractablePages(engine, 'default');
+    expect(discovered.map((d) => d.slug)).toContain('article/invalid-json');
+  });
+
+  test('non-empty invalid atom array does NOT stamp — page stays retryable', async () => {
+    await seedPage({ slug: 'article/invalid-schema', type: 'article' });
+    await runPhaseExtractAtoms(engine, { _transcripts: [], _chat: stubChat('[{"title":"missing fields"}]') });
+    const rows = await engine.executeRaw<{ scan: string | null }>(
+      `SELECT frontmatter->>'atoms_scan_hash' AS scan FROM pages WHERE slug = 'article/invalid-schema'`,
+    );
+    expect(rows[0].scan).toBeNull();
+    const discovered = await discoverExtractablePages(engine, 'default');
+    expect(discovered.map((d) => d.slug)).toContain('article/invalid-schema');
+  });
 });

@@ -248,6 +248,29 @@ async function runBrainstormCli(
   }
 
   const config = loadConfig() ?? {};
+  const configModels = config as {
+    chat_model?: string;
+    models?: { brainstorm?: { judge?: string } };
+  };
+  const readDbModel = async (key: string): Promise<string | null | undefined> => {
+    try {
+      return await engine.getConfig(key);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[brainstorm] failed to read DB config ${key}: ${msg}; falling back`);
+      return null;
+    }
+  };
+  const dbChatModel = await readDbModel('chat_model');
+  const dbJudgeModel = await readDbModel('models.brainstorm.judge');
+  const effectiveConfig = {
+    ...config,
+    chat_model: configModels.chat_model ?? dbChatModel ?? undefined,
+  };
+  const effectiveJudgeModel = parsed.judgeModel
+    ?? configModels.models?.brainstorm?.judge
+    ?? dbJudgeModel
+    ?? undefined;
   // Honor env-var skip for scripted environments that can't easily pass --yes.
   const skipPreview = parsed.yes || process.env.GBRAIN_NO_BRAINSTORM_PREVIEW === '1';
 
@@ -266,7 +289,7 @@ async function runBrainstormCli(
   // `.hint` field that's the whole point of the orchestrator-level wrap.
   let result;
   try {
-    result = await runBrainstorm(engine, config, {
+    result = await runBrainstorm(engine, effectiveConfig, {
       question: parsed.question,
       profile: effectiveProfile,
       skipCostPreview: skipPreview,
@@ -274,7 +297,7 @@ async function runBrainstormCli(
       maxCostUsd: parsed.maxCost,
       maxFarSet: parsed.maxFarSet,
       strictBudget: parsed.strictBudget,
-      judgeModel: parsed.judgeModel || (config as any)?.models?.brainstorm?.judge || undefined,
+      judgeModel: effectiveJudgeModel,
       maxIdeasPerJudgeCall: parsed.maxIdeasPerJudgeCall,
       resumeRunId: parsed.resume,
       forceResume: parsed.forceResume,

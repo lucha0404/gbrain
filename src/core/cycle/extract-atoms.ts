@@ -557,7 +557,13 @@ export async function runPhaseExtractAtoms(
       estimatedSpendUsd +=
         (result.usage.input_tokens * 0.8 + result.usage.output_tokens * 4.0) / 1_000_000;
 
-      const atoms = parseAtomsResponse(result.text);
+      const parsedAtoms = parseAtomsResponseResult(result.text);
+      if (parsedAtoms === null || (parsedAtoms.rawItemCount > 0 && parsedAtoms.atoms.length === 0)) {
+        const itemRef = item.kind === 'page' ? item.slug : item.filePath;
+        console.error(`[extract_atoms] invalid atom JSON/schema for ${itemRef}; leaving source retryable`);
+        continue;
+      }
+      const atoms = parsedAtoms.atoms;
       if (atoms.length === 0) {
         // #2144: tombstone zero-yield pages so they stop being rediscovered.
         // Idempotency is keyed on atom rows — a page that yields no atoms
@@ -706,7 +712,17 @@ export async function runPhaseExtractAtoms(
  * common LLM mistakes: extra prose around the JSON, missing fields,
  * invalid atom_type values. Rejects (returns empty) on hard parse fail.
  */
-export function parseAtomsResponse(raw: string): ExtractedAtom[] {
+export interface AtomsParseResult {
+  atoms: ExtractedAtom[];
+  rawItemCount: number;
+}
+
+/**
+ * Parse an atom response while preserving whether the model produced a valid
+ * JSON array. `null` means syntax/shape failure and must stay retryable; an
+ * empty array is a legitimate zero-yield result that may be tombstoned.
+ */
+export function parseAtomsResponseResult(raw: string): AtomsParseResult | null {
   // Strip markdown code fences if the LLM wrapped JSON in them.
   let cleaned = raw.trim();
   const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -714,7 +730,7 @@ export function parseAtomsResponse(raw: string): ExtractedAtom[] {
 
   // Find the first JSON array bracket.
   const arrayStart = cleaned.indexOf('[');
-  if (arrayStart === -1) return [];
+  if (arrayStart === -1) return null;
   cleaned = cleaned.slice(arrayStart);
 
   let parsed: unknown;
@@ -723,15 +739,15 @@ export function parseAtomsResponse(raw: string): ExtractedAtom[] {
   } catch {
     // Try trimming back from the end to recover from trailing prose.
     const arrayEnd = cleaned.lastIndexOf(']');
-    if (arrayEnd === -1) return [];
+    if (arrayEnd === -1) return null;
     try {
       parsed = JSON.parse(cleaned.slice(0, arrayEnd + 1));
     } catch {
-      return [];
+      return null;
     }
   }
 
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) return null;
 
   const atoms: ExtractedAtom[] = [];
   for (const item of parsed) {
@@ -758,7 +774,12 @@ export function parseAtomsResponse(raw: string): ExtractedAtom[] {
         typeof obj.emotional_register === 'string' ? obj.emotional_register : undefined,
     });
   }
-  return atoms;
+  return { atoms, rawItemCount: parsed.length };
+}
+
+/** Backward-compatible parser surface used by existing callers and tests. */
+export function parseAtomsResponse(raw: string): ExtractedAtom[] {
+  return parseAtomsResponseResult(raw)?.atoms ?? [];
 }
 
 function todayDate(): string {
