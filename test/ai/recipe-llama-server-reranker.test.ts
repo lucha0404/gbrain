@@ -64,7 +64,7 @@ describe('recipe: llama-server-reranker', () => {
     expect(tp.default_model.length).toBeGreaterThan(0);
   });
 
-  test('cost is zero so BudgetTracker FREE_LOCAL_RERANK_PROVIDERS contract holds', () => {
+  test('cost is zero so BudgetTracker recipe-backed pricing treats it as local inference', () => {
     const r = getRecipe('llama-server-reranker')!;
     expect(r.touchpoints.reranker!.cost_per_1m_tokens_usd).toBe(0);
   });

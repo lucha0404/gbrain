@@ -52,8 +52,8 @@ export const llamaServerReranker: Recipe = {
       // by the user via `gbrain config set search.reranker.model
       // llama-server-reranker:<--alias value>`.
       default_model: 'qwen3-reranker-4b',
-      // Local inference cost — consumed by budget-tracker.ts's rerank
-      // pricing lookup (via FREE_LOCAL_RERANK_PROVIDERS) so callers with
+      // Local inference cost — consumed by budget-tracker.ts's recipe-backed
+      // rerank pricing lookup so callers with
       // `--max-cost` don't hard-fail. NOT for API billing; local rerank
       // costs electricity, not tokens.
       cost_per_1m_tokens_usd: 0,

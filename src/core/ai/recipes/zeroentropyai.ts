@@ -50,13 +50,13 @@ export const zeroentropyai: Recipe = {
       safety_factor: 0.5,
       supports_multimodal: false,
       cost_per_1m_tokens_usd: 0.05,
-      price_last_verified: '2026-05-14',
+      price_last_verified: '2026-07-18',
     },
     reranker: {
       models: ['zerank-2', 'zerank-1', 'zerank-1-small'],
       default_model: 'zerank-2',
       cost_per_1m_tokens_usd: 0.025,
-      price_last_verified: '2026-05-14',
+      price_last_verified: '2026-07-18',
       // ZE enforces 5MB per /v1/models/rerank request. gateway.rerank()
       // pre-flights the body size and fails open (no throw to caller).
       max_payload_bytes: 5_000_000,

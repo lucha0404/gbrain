@@ -259,12 +259,8 @@ describe('BudgetTracker.reserve', () => {
   });
 
   test('v0.40.6.1: rerank kind for llama-server-reranker prices at $0 (no TX2 throw under --max-cost)', () => {
-    // The FREE_LOCAL_RERANK_PROVIDERS contract — local inference costs
-    // electricity, not API tokens. Pre-v0.40.6.1 setting --max-cost while
-    // configured for a local reranker would TX2 hard-fail because the
-    // lookupPricing fall-through path returned null for any provider not
-    // in ANTHROPIC_PRICING. Now the rerank kind recognizes the local
-    // provider prefix and returns zero pricing.
+    // The recipe declares local inference at zero API-token cost. Pre-fix,
+    // the budget path ignored recipe pricing and TX2 hard-failed.
     const t = new BudgetTracker({ maxCostUsd: 0.0001, label: 'test', auditPath });
     expect(() =>
       t.reserve({
@@ -289,6 +285,34 @@ describe('BudgetTracker.reserve', () => {
         kind: 'rerank',
       }),
     ).not.toThrow();
+  });
+
+  test('hosted reranker uses recipe pricing under --max-cost', () => {
+    const t = new BudgetTracker({ maxCostUsd: 1.0, label: 'test', auditPath });
+    expect(() =>
+      t.reserve({
+        modelId: 'zeroentropyai:zerank-2',
+        estimatedInputTokens: 1_000_000,
+        maxOutputTokens: 0,
+        kind: 'rerank',
+      }),
+    ).not.toThrow();
+
+    const audit = readAudit();
+    expect(audit.at(-1)?.event).toBe('reserve');
+    expect(audit.at(-1)?.projected_cost_usd).toBe(0.025);
+  });
+
+  test('hosted reranker recipe rejects undeclared model ids', () => {
+    const t = new BudgetTracker({ maxCostUsd: 1.0, label: 'test', auditPath });
+    expect(() =>
+      t.reserve({
+        modelId: 'zeroentropyai:zerank-not-real',
+        estimatedInputTokens: 100,
+        maxOutputTokens: 0,
+        kind: 'rerank',
+      }),
+    ).toThrow(BudgetExhausted);
   });
 
   test('v0.40.6.1: chat kind for the same provider prefix is NOT zero-priced (rerank-only contract)', () => {

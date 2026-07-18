@@ -167,13 +167,28 @@ interface ExtractedAtom {
   emotional_register?: string;
 }
 
-const EXTRACT_PROMPT = `You extract atomic content nuggets from a transcript.
+const EXTRACT_PROMPT = `You extract grounded atomic content nuggets from a source.
 
 An atom is a single-source, self-contained idea that could become a tweet,
 quote, or short essay angle. Each atom must:
   - Stand alone (no "as discussed above")
   - Have a clear point (not just descriptive)
   - Be specific (not a generic platitude)
+
+Grounding rules are strict:
+  - Every factual claim in title, body, source_quote, and lesson must be
+    directly supported by the source. Never invent numbers, causality,
+    outcomes, participant intent, or certainty.
+  - Preserve epistemic status. A plan, proposal, prediction, hypothesis,
+    draft message, or historical observation must remain labeled as such.
+  - Preserve scope. Do not turn one incident, meeting, customer, product, or
+    provider into a universal trend or rule. Avoid absolute wording such as
+    "always", "never", "must", "entirely", or "the key" unless the source
+    itself explicitly supports that exact scope.
+  - source_quote must be verbatim and must directly support the atom body.
+    Do not present a draft as a message that was actually sent.
+  - Virality is only a framing score; it is never permission to exaggerate.
+  - If the source does not support at least one useful grounded atom, output [].
 
 Output a JSON array of atoms (1-3 per transcript, never more than 3).
 Each atom: {title (≤80 chars), atom_type, body (2-4 sentences),

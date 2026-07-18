@@ -37,6 +37,7 @@ import { canonicalLookup, type ModelPricing } from '../model-pricing.ts';
 import { EMBEDDING_PRICING, lookupEmbeddingPrice } from '../embedding-pricing.ts';
 import { splitProviderModelId } from '../model-id.ts';
 import { isoWeekFilename, resolveAuditDir } from '../audit-week-file.ts';
+import { getRecipe } from '../ai/recipes/index.ts';
 
 export type BudgetKind = 'chat' | 'embed' | 'rerank';
 
@@ -127,17 +128,6 @@ function defaultAuditPath(): string {
 }
 
 /**
- * Provider id prefixes that always price at $0 for the rerank kind
- * (electricity, not API tokens). Centralized here so `--max-cost` callers
- * don't hard-fail TX2 when a local rerank provider is configured. Matched
- * against the provider half of the `provider:model` string. Extend this set
- * when adding new local-inference rerank recipes.
- */
-const FREE_LOCAL_RERANK_PROVIDERS: ReadonlySet<string> = new Set([
-  'llama-server-reranker',
-]);
-
-/**
  * Provider id prefixes whose embeddings run on local inference (electricity,
  * not API tokens) and so price at $0. Without this, a `--max-cost`-bounded
  * embed/reindex job configured for a local provider TX2 hard-fails because
@@ -182,11 +172,9 @@ const BUDGET_TRACKER_CANONICAL_CHAT_MODELS: ReadonlySet<string> = new Set([
  *   - Embed: lookupEmbeddingPrice handles the provider:model form; on a miss,
  *     local-inference providers (FREE_LOCAL_EMBED_PROVIDERS) price at $0 so
  *     `--max-cost` callers don't hard-fail.
- *   - Rerank: use the same explicit chat pricing policy (legacy LLM-backed
- *     rerank path);
- *     else if the provider half is in FREE_LOCAL_RERANK_PROVIDERS, return zero
- *     pricing so `--max-cost` callers don't TX2 hard-fail on local inference
- *     recipes (electricity, not tokens); else unknown.
+ *   - Rerank: preserve the legacy Anthropic-backed path, then use the active
+ *     provider recipe's reranker touchpoint. This keeps paid hosted rerankers
+ *     and zero-cost local inference on the same declared pricing source.
  */
 function lookupPricing(modelId: string, kind: BudgetKind): ModelPricing | null {
   if (kind === 'embed') {
@@ -209,12 +197,12 @@ function lookupPricing(modelId: string, kind: BudgetKind): ModelPricing | null {
     const canonical = canonicalLookup(modelId);
     if (canonical) return canonical;
   }
-  // v0.40.6.1: zero-price local-inference rerank providers so the budget
-  // tracker's TX2 hard-fail doesn't trip on `llama-server-reranker:<model>`
-  // under `--max-cost`. Only the rerank kind — chat/embed already have
-  // their own provider-specific pricing surfaces.
-  if (kind === 'rerank' && providerId && FREE_LOCAL_RERANK_PROVIDERS.has(providerId)) {
-    return { input: 0, output: 0 };
+  if (kind === 'rerank' && providerId) {
+    const reranker = getRecipe(providerId)?.touchpoints.reranker;
+    if (!reranker || reranker.cost_per_1m_tokens_usd === undefined) return null;
+    // Empty means user-provided model ids are accepted (local llama-server).
+    if (reranker.models.length > 0 && !reranker.models.includes(model)) return null;
+    return { input: reranker.cost_per_1m_tokens_usd, output: 0 };
   }
   return null;
 }
