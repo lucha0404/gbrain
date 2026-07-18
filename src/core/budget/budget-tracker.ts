@@ -13,8 +13,9 @@
  * Contracts (locked by /plan-eng-review):
  *   - TX1: `record()` THROWS BudgetExhausted(reason:'cost') when cumulative
  *     spend > maxCostUsd. The cap is a real ceiling, not a suggestion.
- *   - TX2: When `maxCostUsd` is set AND the model is not in the pricing
- *     maps, `reserve()` HARD-FAILS with BudgetExhausted(reason:'no_pricing').
+ *   - TX2: When `maxCostUsd` is set AND the model is not allowed by this
+ *     consumer's pricing policy, `reserve()` HARD-FAILS with
+ *     BudgetExhausted(reason:'no_pricing').
  *     When `maxCostUsd` is unset, legacy warn-once behavior is preserved.
  *   - A3 amended: `record()` is best called from try/finally on every
  *     gateway site. When the call threw without usage, callers feed
@@ -31,7 +32,8 @@
 import { mkdirSync, appendFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { gbrainPath } from '../config.ts';
-import { ANTHROPIC_PRICING, type ModelPricing } from '../anthropic-pricing.ts';
+import { ANTHROPIC_PRICING } from '../anthropic-pricing.ts';
+import { canonicalLookup, type ModelPricing } from '../model-pricing.ts';
 import { EMBEDDING_PRICING, lookupEmbeddingPrice } from '../embedding-pricing.ts';
 import { splitProviderModelId } from '../model-id.ts';
 import { isoWeekFilename, resolveAuditDir } from '../audit-week-file.ts';
@@ -98,7 +100,7 @@ export class BudgetExhausted extends Error {
   }
 }
 
-/** One-process memo: warn-once on missing pricing per (modelId, kind). */
+/** One-process memo: warn once per (modelId, kind) rejected by pricing policy. */
 const _unpricedWarnings = new Set<string>();
 
 /** Test seam: reset warn-once memo so unit tests can re-trigger the path. */
@@ -156,19 +158,35 @@ const FREE_LOCAL_EMBED_PROVIDERS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Look up `modelId` in the chat or embedding pricing maps. Returns a
- * per-1M-token price tuple, or null when unknown.
+ * Canonical non-Anthropic chat routes this tracker is explicitly allowed to
+ * price. The tracker owns this policy boundary: expanding CANONICAL_PRICING
+ * elsewhere must not silently relax TX2's fail-closed behavior here.
+ */
+const BUDGET_TRACKER_CANONICAL_CHAT_MODELS: ReadonlySet<string> = new Set([
+  'google:gemini-3.5-flash',
+  'google:gemini-3-flash-preview',
+  'google:gemini-3.1-flash-lite',
+  'litellm:gemini-3.5-flash',
+  'litellm:gemini-3-flash',
+  'litellm:gemini-3-flash-preview',
+  'litellm:gemini-3.1-flash-lite',
+]);
+
+/**
+ * Look up `modelId` under this consumer's chat/embed/rerank pricing policy.
+ * Returns a per-1M-token price tuple, or null when the policy rejects it.
  *
  * Strategy:
- *   - Chat: try the bare model id in ANTHROPIC_PRICING first (legacy keys
- *     are bare claude-* ids). Fall back to the provider-prefixed key.
+ *   - Chat: preserve the Anthropic bare/colon/slash path, then consult the
+ *     canonical table only for this tracker's explicit Gemini allowlist.
  *   - Embed: lookupEmbeddingPrice handles the provider:model form; on a miss,
  *     local-inference providers (FREE_LOCAL_EMBED_PROVIDERS) price at $0 so
  *     `--max-cost` callers don't hard-fail.
- *   - Rerank: try ANTHROPIC_PRICING (legacy path for any Claude-priced
- *     rerank); else if the provider half is in FREE_LOCAL_RERANK_PROVIDERS,
- *     return zero pricing so `--max-cost` callers don't TX2 hard-fail on
- *     local inference recipes (electricity, not tokens); else unknown.
+ *   - Rerank: use the same explicit chat pricing policy (legacy LLM-backed
+ *     rerank path);
+ *     else if the provider half is in FREE_LOCAL_RERANK_PROVIDERS, return zero
+ *     pricing so `--max-cost` callers don't TX2 hard-fail on local inference
+ *     recipes (electricity, not tokens); else unknown.
  */
 function lookupPricing(modelId: string, kind: BudgetKind): ModelPricing | null {
   if (kind === 'embed') {
@@ -182,17 +200,14 @@ function lookupPricing(modelId: string, kind: BudgetKind): ModelPricing | null {
     }
     return null;
   }
-  // chat or rerank: try bare key first, then provider:model or provider/model.
-  // v0.41.21.0: route through splitProviderModelId so slash-prefixed ids
-  // (the form `--judge-model` and OpenRouter recipes emit) hit the pricing
-  // table. Pre-fix, slash-form silently no_pricing-failed `--max-cost` on
-  // brainstorm/lsd.
-  const bare = ANTHROPIC_PRICING[modelId];
-  if (bare) return bare;
-  const { provider: providerId, model: modelTail } = splitProviderModelId(modelId);
-  if (modelTail) {
-    const tailHit = ANTHROPIC_PRICING[modelTail];
-    if (tailHit) return tailHit;
+  // chat or rerank: preserve legacy bare/colon/slash Anthropic compatibility.
+  let priced = ANTHROPIC_PRICING[modelId];
+  const { provider: providerId, model } = splitProviderModelId(modelId);
+  if (!priced && providerId === 'anthropic') priced = ANTHROPIC_PRICING[model];
+  if (priced) return priced;
+  if (kind === 'chat' && BUDGET_TRACKER_CANONICAL_CHAT_MODELS.has(modelId)) {
+    const canonical = canonicalLookup(modelId);
+    if (canonical) return canonical;
   }
   // v0.40.6.1: zero-price local-inference rerank providers so the budget
   // tracker's TX2 hard-fail doesn't trip on `llama-server-reranker:<model>`
@@ -254,10 +269,11 @@ export class BudgetTracker {
    * BEFORE any provider call when:
    *   - cumulative + projected > maxCostUsd (reason: 'cost')
    *   - wall-clock > maxRuntimeMs (reason: 'runtime')
-   *   - maxCostUsd set AND pricing missing (reason: 'no_pricing') -- TX2
+   *   - maxCostUsd set AND consumer pricing policy rejects the model
+   *     (reason: 'no_pricing') -- TX2
    *
-   * When maxCostUsd is unset, missing pricing warns-once but does not throw
-   * (legacy behavior preserved for non-priced providers).
+   * When maxCostUsd is unset, a pricing-policy rejection warns once but does
+   * not throw (legacy behavior preserved for non-priced providers).
    */
   reserve(estimate: BudgetEstimate): void {
     this.assertRuntime(estimate.modelId);
@@ -271,11 +287,15 @@ export class BudgetTracker {
 
     if (projected === null) {
       if (this.opts.maxCostUsd !== undefined) {
-        // TX2: hard-fail when a cap is set but pricing is missing — without
-        // pricing we can't enforce the cap, and silently ignoring it would
-        // void the contract.
-        const msg = `${this.opts.label}: no pricing entry for model "${estimate.modelId}" (kind=${estimate.kind}). ` +
-          `Add it to src/core/${estimate.kind === 'embed' ? 'embedding-pricing.ts' : 'anthropic-pricing.ts'} or drop --max-cost.`;
+        // TX2: hard-fail when a cap is set but no policy-approved price is
+        // available. Silently ignoring that rejection would void the cap.
+        const pricingPolicy = estimate.kind === 'embed'
+          ? 'src/core/embedding-pricing.ts'
+          : estimate.kind === 'chat'
+            ? 'BUDGET_TRACKER_CANONICAL_CHAT_MODELS in src/core/budget/budget-tracker.ts'
+            : 'the rerank pricing policy in src/core/budget/budget-tracker.ts';
+        const msg = `${this.opts.label}: model "${estimate.modelId}" is not allowed by this consumer's pricing policy (kind=${estimate.kind}). ` +
+          `Add it to ${pricingPolicy} or drop --max-cost.`;
         this.fireExhausted();
         throw new BudgetExhausted(msg, {
           reason: 'no_pricing',
@@ -289,7 +309,7 @@ export class BudgetTracker {
       if (!_unpricedWarnings.has(memoKey)) {
         _unpricedWarnings.add(memoKey);
         process.stderr.write(
-          `[budget] BUDGET_TRACKER_NO_PRICING: model "${estimate.modelId}" (kind=${estimate.kind}) not in pricing maps. ` +
+          `[budget] BUDGET_TRACKER_NO_PRICING: model "${estimate.modelId}" (kind=${estimate.kind}) is not allowed by this consumer's pricing policy. ` +
             `Cost gate disabled for this call.\n`,
         );
       }
@@ -360,9 +380,9 @@ export class BudgetTracker {
     const cost = costForUsage(actual.modelId, actual.inputTokens, actual.outputTokens ?? 0, kind);
 
     if (cost === null) {
-      // Unpriced model: record audit but skip cumulative math. Cap (if set)
+      // Pricing-policy rejection: record audit but skip cumulative math. Cap (if set)
       // already rejected this call at reserve(); a record() here means the
-      // unpriced warn-once path let it through (cap unset).
+      // warn-once path let it through (cap unset).
       appendAuditLine(this.auditPath, {
         schema_version: 1,
         ts: new Date().toISOString(),

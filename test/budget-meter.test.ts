@@ -50,14 +50,26 @@ describe('BudgetMeter', () => {
     expect(r.allowed).toBe(true);
   });
 
-  test('non-Anthropic model bypasses gate with warn-once + ledger entry', () => {
+  test('unknown model bypasses gate with warn-once + ledger entry', () => {
     const meter = new BudgetMeter({ budgetUsd: 0.001, phase: 'auto_think', auditPath });
-    const r1 = meter.check({ modelId: 'gemini-3-pro', estimatedInputTokens: 1000, maxOutputTokens: 1000, label: 'gem1' });
-    const r2 = meter.check({ modelId: 'gemini-3-pro', estimatedInputTokens: 1000, maxOutputTokens: 1000, label: 'gem2' });
+    const r1 = meter.check({ modelId: 'mistral:medium', estimatedInputTokens: 1000, maxOutputTokens: 1000, label: 'unknown1' });
+    const r2 = meter.check({ modelId: 'mistral:medium', estimatedInputTokens: 1000, maxOutputTokens: 1000, label: 'unknown2' });
     expect(r1.allowed).toBe(true);
     expect(r1.unpriced).toBe(true);
     expect(r2.allowed).toBe(true);
     expect(meter.unpricedSubmits).toBe(2);
+  });
+
+  test('priced LiteLLM Gemini model participates in cumulative budget enforcement', () => {
+    const meter = new BudgetMeter({ budgetUsd: 0.10, phase: 'auto_think', auditPath });
+    const call = { modelId: 'litellm:gemini-3-flash', estimatedInputTokens: 100_000, maxOutputTokens: 10_000, label: 'gemini' };
+    const first = meter.check(call); // $0.08
+    const second = meter.check(call); // cumulative $0.16 > $0.10
+    expect(first.allowed).toBe(true);
+    expect(first.unpriced).toBeUndefined();
+    expect(first.estimatedCostUsd).toBeCloseTo(0.08, 5);
+    expect(second.allowed).toBe(false);
+    expect(second.reason).toContain('BUDGET_EXHAUSTED');
   });
 
   test('ledger captures every submit (allowed + denied + unpriced)', () => {

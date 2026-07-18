@@ -57,6 +57,21 @@ describe('CANONICAL_PRICING — table integrity', () => {
       CANONICAL_PRICING['google:gemini-2.0-flash'],
     );
   });
+
+  test('Gemini 3 global rates include the production LiteLLM group ids', () => {
+    expect(CANONICAL_PRICING['litellm:gemini-3.5-flash']).toEqual({ input: 1.5, output: 9 });
+    expect(CANONICAL_PRICING['litellm:gemini-3-flash']).toEqual({ input: 0.5, output: 3 });
+    expect(CANONICAL_PRICING['litellm:gemini-3.1-flash-lite']).toEqual({ input: 0.25, output: 1.5 });
+    expect(CANONICAL_PRICING['litellm:gemini-3.5-flash']).toEqual(
+      CANONICAL_PRICING['google:gemini-3.5-flash'],
+    );
+    expect(CANONICAL_PRICING['litellm:gemini-3-flash']).toEqual(
+      CANONICAL_PRICING['google:gemini-3-flash-preview'],
+    );
+    expect(CANONICAL_PRICING['litellm:gemini-3.1-flash-lite']).toEqual(
+      CANONICAL_PRICING['google:gemini-3.1-flash-lite'],
+    );
+  });
 });
 
 describe('canonicalLookup — id normalization', () => {
@@ -70,6 +85,11 @@ describe('canonicalLookup — id normalization', () => {
 
   test('slash form → hit', () => {
     expect(canonicalLookup('anthropic/claude-opus-4-8')).toEqual({ input: 5.0, output: 25.0 });
+  });
+
+  test('LiteLLM Gemini colon/slash forms hit canonical pricing', () => {
+    expect(canonicalLookup('litellm:gemini-3-flash')).toEqual({ input: 0.5, output: 3 });
+    expect(canonicalLookup('litellm/gemini-3.1-flash-lite')).toEqual({ input: 0.25, output: 1.5 });
   });
 
   test('non-anthropic bare id → miss (preserves prior null contract)', () => {

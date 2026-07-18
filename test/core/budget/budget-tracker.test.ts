@@ -33,6 +33,16 @@ let auditPath: string;
 let stderrCapture: string;
 let origStderrWrite: typeof process.stderr.write;
 
+const BUDGET_TRACKER_GEMINI_CHAT_MODELS = [
+  'google:gemini-3.5-flash',
+  'google:gemini-3-flash-preview',
+  'google:gemini-3.1-flash-lite',
+  'litellm:gemini-3.5-flash',
+  'litellm:gemini-3-flash',
+  'litellm:gemini-3-flash-preview',
+  'litellm:gemini-3.1-flash-lite',
+] as const;
+
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'gbrain-budget-test-'));
   auditPath = join(tmp, 'budget.jsonl');
@@ -135,7 +145,7 @@ describe('BudgetTracker.reserve', () => {
     expect(caught).toBeInstanceOf(BudgetExhausted);
     expect((caught as BudgetExhausted).reason).toBe('no_pricing');
     expect((caught as BudgetExhausted).modelId).toBe('mystery:some-unreleased-model');
-    expect((caught as Error).message).toMatch(/anthropic-pricing\.ts/);
+    expect((caught as Error).message).toMatch(/BUDGET_TRACKER_CANONICAL_CHAT_MODELS/);
   });
 
   test('v0.41.20.0: slash-prefix anthropic/claude-* under --max-cost does NOT no_pricing throw (THE FIX)', () => {
@@ -168,6 +178,60 @@ describe('BudgetTracker.reserve', () => {
         kind: 'chat',
       }),
     ).not.toThrow();
+  });
+
+  test('every explicitly allowlisted Gemini chat model is priced under a cap', () => {
+    for (const modelId of BUDGET_TRACKER_GEMINI_CHAT_MODELS) {
+      const perModelAudit = join(tmp, `${modelId.replaceAll(':', '-')}.jsonl`);
+      const t = new BudgetTracker({ maxCostUsd: 10.0, label: 'test', auditPath: perModelAudit });
+      expect(() =>
+        t.reserve({
+          modelId,
+          estimatedInputTokens: 100_000,
+          maxOutputTokens: 10_000,
+          kind: 'chat',
+        }),
+      ).not.toThrow();
+      const audit = readFileSync(perModelAudit, 'utf-8').trim().split('\n').map((line) => JSON.parse(line));
+      expect(audit[0].event).toBe('reserve');
+      expect(Number(audit[0].projected_cost_usd)).toBeGreaterThan(0);
+    }
+  });
+
+  test('Gemini chat allowlist does not change rerank pricing policy', () => {
+    for (const modelId of BUDGET_TRACKER_GEMINI_CHAT_MODELS) {
+      const t = new BudgetTracker({ maxCostUsd: 10.0, label: 'test', auditPath });
+      let caught: unknown = null;
+      try {
+        t.reserve({
+          modelId,
+          estimatedInputTokens: 100,
+          maxOutputTokens: 100,
+          kind: 'rerank',
+        });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(BudgetExhausted);
+      expect((caught as BudgetExhausted).reason).toBe('no_pricing');
+    }
+  });
+
+  test('canonical providers outside the tracker allowlist still fail closed under a cap', () => {
+    const t = new BudgetTracker({ maxCostUsd: 10.0, label: 'test', auditPath });
+    let caught: unknown = null;
+    try {
+      t.reserve({
+        modelId: 'openai:gpt-5',
+        estimatedInputTokens: 100,
+        maxOutputTokens: 100,
+        kind: 'chat',
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(BudgetExhausted);
+    expect((caught as BudgetExhausted).reason).toBe('no_pricing');
   });
 
   test('no cap + unknown pricing: warns once per process, no throw', () => {

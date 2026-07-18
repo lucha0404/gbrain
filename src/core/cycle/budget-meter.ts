@@ -11,8 +11,8 @@
  *
  * Per Codex P1 #10: each subagent submit estimates max-cost from
  * `model + max_output_tokens`, accumulates per-cycle, refuses next submit
- * if cumulative > budget. Non-Anthropic models bypass the gate with a
- * `BUDGET_METER_NO_PRICING` warn (once per process).
+ * if cumulative > budget. Models absent from this consumer's explicit pricing
+ * policy bypass the gate with a `BUDGET_METER_NO_PRICING` warn (once per process).
  *
  * Ledger lives at `~/.gbrain/audit/dream-budget-YYYY-Www.jsonl` (ISO-week
  * rotation, same pattern as shell-audit; filename math now goes through
@@ -35,7 +35,7 @@ export interface BudgetMeterOpts {
 }
 
 export interface SubmitEstimate {
-  /** Resolved Anthropic model id (e.g. 'claude-opus-4-7'). */
+  /** Resolved provider model id (e.g. 'litellm:gemini-3-flash'). */
   modelId: string;
   /** Best-guess input token count. Caller computes from prompt size. */
   estimatedInputTokens: number;
@@ -51,11 +51,11 @@ export interface BudgetCheckResult {
   cumulativeCostUsd: number;
   budgetUsd: number;
   reason?: string;
-  /** True when the model wasn't in the pricing map (cycle runs unbounded for that submit). */
+  /** True when pricing policy rejected the model (cycle runs unbounded for that submit). */
   unpriced?: boolean;
 }
 
-/** One-process memo: warn-once on missing pricing per model. */
+/** One-process memo: warn once per model rejected by pricing policy. */
 const _unpricedWarnings = new Set<string>();
 
 function auditFilePath(override?: string): string {
@@ -89,14 +89,14 @@ export class BudgetMeter {
   check(estimate: SubmitEstimate): BudgetCheckResult {
     const cost = estimateMaxCostUsd(estimate.modelId, estimate.estimatedInputTokens, estimate.maxOutputTokens);
 
-    // Codex P1 #10: non-Anthropic / unpriced models bypass the gate.
+    // Models absent from this consumer's explicit pricing policy bypass the gate.
     if (cost === null) {
       this.unpricedSubmitsThisCycle++;
       if (!_unpricedWarnings.has(estimate.modelId)) {
         _unpricedWarnings.add(estimate.modelId);
         process.stderr.write(
-          `[budget] BUDGET_METER_NO_PRICING: model "${estimate.modelId}" not in ANTHROPIC_PRICING. ` +
-          `Budget gate disabled for this submit. (Per-provider pricing modules: TODO v0.29.)\n`,
+          `[budget] BUDGET_METER_NO_PRICING: model "${estimate.modelId}" is not allowed by the dream budget pricing policy. ` +
+          `Budget gate disabled for this submit.\n`,
         );
       }
       writeLedgerLine(this.auditPath, {
@@ -175,7 +175,7 @@ export class BudgetMeter {
   /** Cumulative cost spent so far this cycle. */
   get totalSpent(): number { return this.cumulativeUsd; }
 
-  /** Count of submits that bypassed the gate due to missing pricing. */
+  /** Count of submits that bypassed the gate after pricing-policy rejection. */
   get unpricedSubmits(): number { return this.unpricedSubmitsThisCycle; }
 }
 

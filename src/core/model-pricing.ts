@@ -21,7 +21,7 @@
  * regression trip-wire if anyone later re-hardcodes a view back into a duplicate)
  * and that the cross-modal panel models are all present in canonical.
  *
- * Prices verified 2026-06-03 against published provider pricing:
+ * Prices verified 2026-07-18 against published provider pricing:
  *   - Anthropic: https://platform.claude.com/docs/en/about-claude/models/overview
  *   - OpenAI:    https://openai.com/api/pricing
  *   - Google:    https://ai.google.dev/gemini-api/docs/pricing
@@ -84,6 +84,16 @@ export const CANONICAL_PRICING: Record<string, ModelPricing> = {
   // `gemini-2-flash` kept as an alias for the legacy id spelling.
   'google:gemini-2.0-flash':              { input:  0.10, output:  0.40 },
   'google:gemini-2-flash':                { input:  0.10, output:  0.40 },
+  // Gemini 3 global Standard rates. The litellm:* keys are the exact model
+  // groups used by this deployment's local LiteLLM gateway; they resolve to
+  // the matching Google models without markup.
+  'google:gemini-3.5-flash':              { input:  1.50, output:  9.00 },
+  'litellm:gemini-3.5-flash':             { input:  1.50, output:  9.00 },
+  'google:gemini-3-flash-preview':        { input:  0.50, output:  3.00 },
+  'litellm:gemini-3-flash':               { input:  0.50, output:  3.00 },
+  'litellm:gemini-3-flash-preview':       { input:  0.50, output:  3.00 },
+  'google:gemini-3.1-flash-lite':         { input:  0.25, output:  1.50 },
+  'litellm:gemini-3.1-flash-lite':        { input:  0.25, output:  1.50 },
 
   // ── Together / DeepSeek (cross-modal-eval panel) ───────────────────────
   'together:meta-llama/Llama-3.3-70B-Instruct-Turbo': { input: 0.88, output: 0.88 },

@@ -10,6 +10,17 @@
 
 import { describe, test, expect } from 'bun:test';
 import { ANTHROPIC_PRICING, estimateMaxCostUsd } from '../src/core/anthropic-pricing.ts';
+import { canonicalLookup } from '../src/core/model-pricing.ts';
+
+const DREAM_BUDGET_GEMINI_MODELS = [
+  'google:gemini-3.5-flash',
+  'google:gemini-3-flash-preview',
+  'google:gemini-3.1-flash-lite',
+  'litellm:gemini-3.5-flash',
+  'litellm:gemini-3-flash',
+  'litellm:gemini-3-flash-preview',
+  'litellm:gemini-3.1-flash-lite',
+] as const;
 
 describe('estimateMaxCostUsd', () => {
   // Sonnet 4.6 = $3 input / $15 output per MTok.
@@ -49,9 +60,23 @@ describe('estimateMaxCostUsd', () => {
     expect(cost).toBeCloseTo(1.75, 5);
   });
 
+  test('priced LiteLLM Gemini models enforce the dream-cycle budget gate', () => {
+    for (const modelId of DREAM_BUDGET_GEMINI_MODELS) {
+      const canonical = canonicalLookup(modelId);
+      expect(canonical).toBeDefined();
+      expect(estimateMaxCostUsd(modelId, 1_000_000, 1_000_000)).toBeCloseTo(
+        canonical!.input + canonical!.output,
+        5,
+      );
+    }
+  });
+
   test('unknown model → returns null (caller warn-once + bypass)', () => {
     expect(estimateMaxCostUsd('mistral:medium', 1_000, 1_000)).toBeNull();
     expect(estimateMaxCostUsd('gpt-5', 1_000, 1_000)).toBeNull();
+    // GPT-5 exists in CANONICAL_PRICING, but this consumer intentionally
+    // prices only Anthropic plus its explicit Gemini deployment routes.
+    expect(estimateMaxCostUsd('openai:gpt-5', 1_000, 1_000)).toBeNull();
   });
 
   test('OpenRouter nested form returns null — tail is `anthropic/claude-...` which is not a pricing key', () => {
