@@ -431,6 +431,51 @@ describe('E2E synthesize chunking — fan-out shape', () => {
       await rig.cleanup();
     }
   }, 30_000);
+
+  test('configured Gemini 3.5 Flash-Lite uses its multilingual-safe model budget', async () => {
+    const rig = await setupRig();
+    try {
+      await rig.engine.setConfig('dream.synthesize.enabled', 'true');
+      await rig.engine.setConfig('dream.synthesize.session_corpus_dir', rig.corpusDir);
+      await rig.engine.setConfig(
+        'models.dream.synthesize',
+        'litellm:gemini-3.5-flash-lite',
+      );
+
+      // 550K chars is below the generic LiteLLM budget (630K) but above the
+      // exact Gemini multilingual-safe budget (283,115). This proves the
+      // production config-resolution path reaches the exact model override.
+      const basename = '2026-07-25-gemini-context.txt';
+      const filePath = corpusPath(rig.corpusDir, basename);
+      const content = 'x'.repeat(550_000);
+      writeFileSync(filePath, content);
+      const contentHash = await seedVerdict(rig.engine, filePath, content);
+      const hash16 = contentHash.slice(0, 16);
+
+      await withoutAnthropicKey(async () => {
+        await withSubagentAutoCancel(rig.engine, async () => {
+          const result = await runPhaseSynthesize(rig.engine, {
+            brainDir: rig.brainDir,
+            dryRun: false,
+          });
+          const details = result.details as { children_submitted: number };
+          expect(details.children_submitted).toBe(2);
+        });
+      });
+
+      const rows = await rig.engine.executeRaw<{ idempotency_key: string }>(
+        `SELECT idempotency_key FROM minion_jobs WHERE name = 'subagent' ORDER BY id`,
+      );
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        expect(row.idempotency_key).toMatch(
+          new RegExp(`^dream:synth:${escapeRe(filePath)}:${hash16}:c\\d+of2$`),
+        );
+      }
+    } finally {
+      await rig.cleanup();
+    }
+  }, 30_000);
 });
 
 function escapeRe(s: string): string {

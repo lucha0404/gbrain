@@ -30,6 +30,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { chat as gatewayChat, validateModelId, type ChatResult } from '../ai/gateway.ts';
+import { getModelTokenLimits } from '../ai/capabilities.ts';
 import { AIConfigError } from '../ai/errors.ts';
 import { normalizeModelId } from '../model-id.ts';
 import { hasAnthropicKey } from '../ai/anthropic-key.ts';
@@ -55,21 +56,11 @@ const SUMMARY_SLUG_RE = new RegExp(`^${PAGE_SLUG_SEG}(\\/${PAGE_SLUG_SEG})*$`, '
 // ── Model context budget (D1, D5, D7, D9) ─────────────────────────────
 
 /**
- * Anthropic model id → input context window (tokens).
- * Unknown id (non-Anthropic alias, custom string) → safe 200K-token fallback
- * via `computeChunkCharBudget`. Codex finding #4: `resolveModel()` does not
- * canonicalize to Anthropic-only; this map keys on the exact strings the
- * resolver returns for known Anthropic aliases.
+ * Model limits come from ai/capabilities.ts. Unknown bare/custom ids keep the
+ * historical 180K-token prompt fallback via `computeChunkCharBudget`. The
+ * default token-to-char ratio of 3.5 matches PR #748 and remains the legacy
+ * behavior; exact model overrides may lower it for multilingual safety.
  */
-const MODEL_CONTEXT_TOKENS: Record<string, number> = {
-  'claude-opus-4-7': 1_000_000,
-  'claude-opus-4-6': 1_000_000,
-  'claude-sonnet-4-6': 200_000,
-  'claude-sonnet-4-5': 200_000,
-  'claude-haiku-4-5-20251001': 200_000,
-};
-
-/** Token-to-char ratio. 3.5 matches PR #748; conservative for English text. */
 const CHARS_PER_TOKEN = 3.5;
 /** Reserve 10% of context window for system prompt + tool defs + output. */
 const HEADROOM_RATIO = 0.9;
@@ -87,27 +78,28 @@ const DEFAULT_SUBAGENT_WAIT_TIMEOUT_MS = 35 * 60 * 1000;
  *
  * Resolution:
  *   - configMaxPromptTokens (already floored at MIN_PROMPT_TOKENS) wins when set.
- *   - Else the model's MODEL_CONTEXT_TOKENS entry × HEADROOM_RATIO.
- *   - Else (non-Anthropic alias / custom id) UNKNOWN_MODEL_BUDGET_TOKENS, with
+ *   - Else the model/provider capability context × HEADROOM_RATIO.
+ *   - Else (unknown bare/custom id) UNKNOWN_MODEL_BUDGET_TOKENS, with
  *     a once-per-process stderr warning.
  *
  * D7 scope: this bounds the INITIAL prompt size only. Tool-loop turn-N
  * accumulation is out of scope for v0.30.2 (terminal-error classification
  * catches turn-N blowups; per-turn budget guard is a v0.31+ follow-up).
  */
-function computeChunkCharBudget(
+export function computeChunkCharBudget(
   model: string,
   configMaxPromptTokens: number | null,
 ): number {
+  const limits = getModelTokenLimits(model);
+  const charsPerToken = limits?.safePromptCharsPerToken ?? CHARS_PER_TOKEN;
   if (configMaxPromptTokens !== null) {
-    return Math.floor(configMaxPromptTokens * CHARS_PER_TOKEN);
+    return Math.floor(configMaxPromptTokens * charsPerToken);
   }
-  const ctx = MODEL_CONTEXT_TOKENS[model];
-  if (ctx === undefined) {
+  if (limits === null) {
     warnUnknownModelOnce(model);
     return Math.floor(UNKNOWN_MODEL_BUDGET_TOKENS * CHARS_PER_TOKEN);
   }
-  return Math.floor(ctx * HEADROOM_RATIO * CHARS_PER_TOKEN);
+  return Math.floor(limits.maxContext * HEADROOM_RATIO * charsPerToken);
 }
 
 const _unknownModelWarned = new Set<string>();
@@ -115,8 +107,8 @@ function warnUnknownModelOnce(model: string): void {
   if (_unknownModelWarned.has(model)) return;
   _unknownModelWarned.add(model);
   process.stderr.write(
-    `[dream] model "${model}" is not in MODEL_CONTEXT_TOKENS; ` +
-    `using ${UNKNOWN_MODEL_BUDGET_TOKENS}-token fallback budget. ` +
+    `[dream] model "${model}" has no declared chat context limit; ` +
+    `using ${UNKNOWN_MODEL_BUDGET_TOKENS}-token prompt fallback. ` +
     `Set dream.synthesize.max_prompt_tokens to override.\n`,
   );
 }
@@ -149,9 +141,13 @@ export function splitTranscriptByBudget(
   content: string,
   contentHash: string,
   maxChars: number,
+  maxChunks = Number.POSITIVE_INFINITY,
 ): string[] {
   if (maxChars <= 0) {
     throw new Error(`splitTranscriptByBudget: maxChars must be > 0, got ${maxChars}`);
+  }
+  if (maxChunks < 1) {
+    throw new Error(`splitTranscriptByBudget: maxChunks must be >= 1, got ${maxChunks}`);
   }
   if (content.length <= maxChars) return [content];
 
@@ -166,6 +162,9 @@ export function splitTranscriptByBudget(
     const split = findBoundary(remaining, maxChars, searchStart);
     out.push(remaining.slice(0, split));
     remaining = remaining.slice(split);
+    // The caller only needs to know the cap was exceeded. Return a
+    // maxChunks+1 sentinel instead of scanning and copying the full tail.
+    if (out.length > maxChunks) return out;
   }
   if (remaining.length > 0) out.push(remaining);
   return out;
@@ -590,14 +589,19 @@ export async function runPhaseSynthesize(
         continue;
       }
 
-      const chunks = splitTranscriptByBudget(t.content, t.contentHash, maxCharsPerChunk);
+      const chunks = splitTranscriptByBudget(
+        t.content,
+        t.contentHash,
+        maxCharsPerChunk,
+        config.maxChunksPerTranscript,
+      );
 
       // D5 cap hit: log + skip; do NOT write to dream_verdicts. Closes the
       // poison-pill class — next cycle re-attempts under whatever budget
       // is then current.
       if (chunks.length > config.maxChunksPerTranscript) {
         process.stderr.write(
-          `[dream] transcript ${t.basename} produced ${chunks.length} chunks at ` +
+          `[dream] transcript ${t.basename} produced at least ${chunks.length} chunks at ` +
           `${maxCharsPerChunk}-char budget (cap=${config.maxChunksPerTranscript}); skipping. ` +
           `Increase dream.synthesize.max_chunks_per_transcript or use a larger-context model.\n`,
         );

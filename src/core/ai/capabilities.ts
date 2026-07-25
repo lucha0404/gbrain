@@ -25,6 +25,55 @@ import { resolveRecipe } from './model-resolver.ts';
 import { listRecipes } from './recipes/index.ts';
 import { AIConfigError } from './errors.ts';
 
+export interface ModelTokenLimits {
+  /** Maximum input context accepted by the model. */
+  maxContext: number;
+  /** Maximum generated output accepted by the model, when known. */
+  maxOutput?: number;
+  /**
+   * Conservative characters-per-token multiplier for initial-prompt
+   * budgeting. Set only when the shared English-oriented default would be
+   * unsafe for multilingual input.
+   */
+  safePromptCharsPerToken?: number;
+}
+
+/**
+ * Exact model limits that differ from their provider recipe's conservative
+ * default. Keys are canonical `provider:model` ids after recipe alias
+ * resolution. Dream and the gateway capability surface both consume this
+ * registry so model-specific limits cannot drift between call paths.
+ */
+const MODEL_TOKEN_LIMIT_OVERRIDES: Readonly<Record<string, ModelTokenLimits>> = {
+  'anthropic:claude-opus-4-7': { maxContext: 1_000_000 },
+  'anthropic:claude-opus-4-6': { maxContext: 1_000_000 },
+  'litellm:gemini-3.5-flash-lite': {
+    maxContext: 1_048_576,
+    maxOutput: 65_536,
+    safePromptCharsPerToken: 0.3,
+  },
+};
+
+function exactModelTokenLimits(providerId: string, modelId: string): ModelTokenLimits | undefined {
+  return MODEL_TOKEN_LIMIT_OVERRIDES[`${providerId}:${modelId}`];
+}
+
+const DEFAULT_CHAT_CONTEXT_TOKENS = 128_000;
+
+function resolveTokenLimits(
+  providerId: string,
+  modelId: string,
+  providerMaxContext: number | undefined,
+): ModelTokenLimits {
+  const exact = exactModelTokenLimits(providerId, modelId);
+  return {
+    maxContext: exact?.maxContext ?? providerMaxContext ?? DEFAULT_CHAT_CONTEXT_TOKENS,
+    ...(exact?.maxOutput !== undefined ? { maxOutput: exact.maxOutput } : {}),
+    ...(exact?.safePromptCharsPerToken !== undefined
+      ? { safePromptCharsPerToken: exact.safePromptCharsPerToken } : {}),
+  };
+}
+
 export interface ProviderCapabilities {
   /** Provider returns native function/tool calling. Required for the subagent loop. */
   supportsToolCalling: boolean;
@@ -58,11 +107,40 @@ export interface ProviderCapabilities {
   supportsThinking: boolean;
 
   /**
-   * Max input+output tokens the provider/model accepts per turn. Drives the
-   * gateway's pre-flight context check; the loop refuses to send a prompt
-   * that exceeds this (with a paste-ready truncation hint).
+   * Maximum input context advertised for the provider/model. Capability
+   * consumers can reserve their own headroom before constructing a request;
+   * this field does not itself enforce a gateway-wide pre-flight check.
    */
   maxContext: number;
+
+  /** Maximum generated output accepted by the exact model, when known. */
+  maxOutput?: number;
+}
+
+/**
+ * Resolve the token limits for a model, combining exact model overrides with
+ * the provider recipe's conservative context default. Bare Claude ids are
+ * qualified for backward compatibility with resolveModel() tier defaults.
+ * Returns null for an unknown provider, a bare non-Claude id, or a provider
+ * without a chat touchpoint.
+ */
+export function getModelTokenLimits(modelString: string): ModelTokenLimits | null {
+  const qualified = !modelString.includes(':') && !modelString.includes('/')
+    && modelString.startsWith('claude-')
+    ? `anthropic:${modelString}`
+    : modelString;
+
+  try {
+    const { recipe, parsed } = resolveRecipe(qualified);
+    const chat = recipe.touchpoints.chat;
+    if (!chat) return null;
+    return resolveTokenLimits(parsed.providerId, parsed.modelId, chat.max_context_tokens);
+  } catch (error) {
+    if (error instanceof AIConfigError) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -85,6 +163,11 @@ export function getProviderCapabilities(modelString: string): ProviderCapabiliti
     );
   }
 
+  const tokenLimits = resolveTokenLimits(
+    parsed.providerId,
+    parsed.modelId,
+    chat.max_context_tokens,
+  );
   // For native providers, the model must be in the recipe's allow-list. For
   // openai-compatible recipes (litellm, ollama, llama-server), arbitrary model
   // ids are accepted because the gateway behind the proxy decides what's real.
@@ -107,7 +190,8 @@ export function getProviderCapabilities(modelString: string): ProviderCapabiliti
     // a `supports_thinking` field later without breaking this helper (it'll
     // just keep returning false until a recipe sets it).
     supportsThinking: false,
-    maxContext: chat.max_context_tokens ?? 128_000,
+    maxContext: tokenLimits.maxContext,
+    ...(tokenLimits.maxOutput !== undefined ? { maxOutput: tokenLimits.maxOutput } : {}),
   };
 }
 

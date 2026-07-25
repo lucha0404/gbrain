@@ -17,7 +17,43 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { splitTranscriptByBudget, rewriteChunkedSlug } from '../src/core/cycle/synthesize.ts';
+import {
+  computeChunkCharBudget,
+  splitTranscriptByBudget,
+  rewriteChunkedSlug,
+} from '../src/core/cycle/synthesize.ts';
+
+describe('computeChunkCharBudget — model-level context limits', () => {
+  test('uses 90% of Gemini 3.5 Flash-Lite 1,048,576-token context', () => {
+    expect(
+      computeChunkCharBudget('litellm:gemini-3.5-flash-lite', null),
+    ).toBe(283_115);
+  });
+
+  test('keeps generic LiteLLM models on the recipe 200K safe budget', () => {
+    expect(
+      computeChunkCharBudget('litellm:some-proxied-model', null),
+    ).toBe(630_000);
+  });
+
+  test('keeps the historical fallback for an unknown bare model', () => {
+    expect(
+      computeChunkCharBudget('custom-model', null),
+    ).toBe(630_000);
+  });
+
+  test('preserves the 1M context override for bare Anthropic Opus ids', () => {
+    expect(
+      computeChunkCharBudget('claude-opus-4-7', null),
+    ).toBe(3_150_000);
+  });
+
+  test('explicit operator max_prompt_tokens still wins', () => {
+    expect(
+      computeChunkCharBudget('litellm:gemini-3.5-flash-lite', 200_000),
+    ).toBe(60_000);
+  });
+});
 
 describe('splitTranscriptByBudget — single chunk path', () => {
   test('returns single-element array when content <= maxChars', () => {
@@ -35,6 +71,17 @@ describe('splitTranscriptByBudget — single chunk path', () => {
   test('throws on non-positive maxChars', () => {
     expect(() => splitTranscriptByBudget('hi', 'abc', 0)).toThrow(/maxChars/);
     expect(() => splitTranscriptByBudget('hi', 'abc', -5)).toThrow(/maxChars/);
+  });
+
+  test('stops at maxChunks+1 once the caller only needs a cap-hit sentinel', () => {
+    const content = 'x'.repeat(10_000);
+    const out = splitTranscriptByBudget(content, 'abc123def', 100, 2);
+    expect(out).toHaveLength(3);
+    expect(out.join('').length).toBeLessThan(content.length);
+  });
+
+  test('rejects a non-positive maxChunks cap', () => {
+    expect(() => splitTranscriptByBudget('hi', 'abc', 100, 0)).toThrow(/maxChunks/);
   });
 });
 

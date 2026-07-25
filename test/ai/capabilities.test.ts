@@ -40,6 +40,14 @@ describe('getProviderCapabilities (v0.38 Slice 1 — D6/D7 recipe-driven capabil
     expect(caps.supportsPromptCaching).toBe(false);
   });
 
+  it('uses exact model limits for Gemini 3.5 Flash-Lite behind LiteLLM', () => {
+    const caps = getProviderCapabilities('litellm:gemini-3.5-flash-lite');
+    expect(caps.maxContext).toBe(1_048_576);
+    expect(caps.maxOutput).toBe(65_536);
+    expect(caps.supportsToolCalling).toBe(true);
+    expect(caps.supportsPromptCaching).toBe(false);
+  });
+
   it('honors Anthropic alias (undated → dated)', () => {
     const caps = getProviderCapabilities('anthropic:claude-haiku-4-5');
     expect(caps.supportsToolCalling).toBe(true);
