@@ -40,6 +40,7 @@ describe('KNOWN_CONFIG_KEYS', () => {
 
   test('allows the contextual synopsis model key', () => {
     expect(KNOWN_CONFIG_KEYS).toContain('models.contextual_synopsis');
+    expect(KNOWN_CONFIG_KEYS).toContain('models.eval.contradictions_judge');
   });
 
   test('contains the dream synthesize timeout keys (#1594)', () => {
