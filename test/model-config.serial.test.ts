@@ -175,18 +175,30 @@ describe('resolveModel — v0.31.12 tier system', () => {
     expect(m).toBe(TIER_DEFAULTS.reasoning);
   });
 
-  test('v0.38 D7: tier.subagent accepts non-Anthropic models that support tools (with cost warn)', async () => {
+  test('v0.38 D7: tier.subagent accepts non-cacheable models that support tools (with cost warn)', async () => {
     // Pre-v0.38 the resolver hard-fell-back to TIER_DEFAULTS.subagent for any
     // non-Anthropic model. v0.38 (D6/D7) replaces that with a capability check:
-    // OpenAI/Gemini/etc. support tools → resolved unchanged + warn about
+    // providers such as Groq support tools → resolved unchanged + warn about
     // missing prompt caching (cost regression on long loops, not a refusal).
+    stub.set('models.default', 'groq:llama-3.3-70b-versatile');
+    const m = await resolveModel(stub as never, {
+      tier: 'subagent',
+      fallback: 'sonnet',
+    });
+    expect(m).toBe('groq:llama-3.3-70b-versatile');
+    expect(stderrCapture).toContain('caching');
+  });
+
+  test('tier.subagent accepts OpenAI automatic prompt caching without a cost warn', async () => {
+    // OpenAI's recipe declares automatic prompt caching. This is a fully
+    // capable route, so the no-caching warning would be stale and misleading.
     stub.set('models.default', 'openai:gpt-5.2');
     const m = await resolveModel(stub as never, {
       tier: 'subagent',
       fallback: 'sonnet',
     });
     expect(m).toBe('openai:gpt-5.2');
-    expect(stderrCapture).toContain('caching');
+    expect(stderrCapture).toBe('');
   });
 
   test('v0.38 D7: tier.subagent rejects unknown providers (falls back to default)', async () => {
