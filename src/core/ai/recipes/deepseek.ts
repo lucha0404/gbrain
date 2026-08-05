@@ -5,9 +5,11 @@ import type { Recipe } from '../types.ts';
  * formerly the `deepseek-reasoner` model, retired 2026-07-24) returns its
  * answer in a separate `reasoning_content` field and leaves `content`
  * empty/whitespace when the whole response was reasoning. The AI SDK's openai-compatible adapter reads only `content`, so
- * the model appears to answer with nothing. This transport shim promotes
- * `reasoning_content` into `content` when `content` is empty, before the
- * adapter parses the body. Fail-open: any error returns the original response.
+ * the model appears to answer with nothing. DeepSeek also reports automatic
+ * cache hits as `prompt_cache_hit_tokens`, while the adapter reads OpenAI's
+ * `prompt_tokens_details.cached_tokens`. This transport shim normalizes both
+ * differences before the adapter parses the body. Fail-open: any error returns
+ * the original response.
  * Non-streaming JSON chat completions only.
  *
  * @internal exported for tests.
@@ -26,6 +28,25 @@ export const deepseekReasoningContentCompatFetch = (async (
     const json = await res.clone().json();
     const choices = Array.isArray(json?.choices) ? json.choices : [];
     let modified = false;
+    const usage = json?.usage;
+    if (
+      usage &&
+      typeof usage === 'object' &&
+      typeof usage.prompt_cache_hit_tokens === 'number'
+    ) {
+      const details = usage.prompt_tokens_details;
+      if (
+        !details ||
+        typeof details !== 'object' ||
+        typeof details.cached_tokens !== 'number'
+      ) {
+        usage.prompt_tokens_details = {
+          ...(details && typeof details === 'object' ? details : {}),
+          cached_tokens: usage.prompt_cache_hit_tokens,
+        };
+        modified = true;
+      }
+    }
     for (const choice of choices) {
       const msg = choice?.message;
       if (!msg) continue;
@@ -95,7 +116,9 @@ export const deepseek: Recipe = {
       models: ['deepseek-v4-flash', 'deepseek-v4-pro'],
       supports_tools: true,
       supports_subagent_loop: true,
-      supports_prompt_cache: false,
+      // DeepSeek's disk context cache is enabled for every user and matches
+      // repeated prefixes automatically; no client cache-control markers.
+      prompt_cache_mode: 'automatic',
       max_context_tokens: 1_000_000,
       cost_per_1m_input_usd: 0.14, // deepseek-v4-flash cache-miss baseline
       cost_per_1m_output_usd: 0.28,

@@ -10,18 +10,18 @@ describe('getProviderCapabilities (v0.38 Slice 1 — D6/D7 recipe-driven capabil
     expect(caps.maxContext).toBe(200000);
   });
 
-  it('returns capabilities for OpenAI (no prompt caching field set as true)', () => {
+  it('returns capabilities for OpenAI (automatic prompt caching)', () => {
     const caps = getProviderCapabilities('openai:gpt-5.2');
     expect(caps.supportsToolCalling).toBe(true);
-    expect(caps.supportsPromptCaching).toBe(false); // OpenAI implicit caching doesn't get marked
+    expect(caps.supportsPromptCaching).toBe(true);
     expect(caps.maxContext).toBe(200000);
   });
 
   it('returns capabilities for Google Gemini', () => {
-    const caps = getProviderCapabilities('google:gemini-1.5-pro');
+    const caps = getProviderCapabilities('google:gemini-2.0-flash');
     expect(caps.supportsToolCalling).toBe(true);
     expect(caps.supportsPromptCaching).toBe(false);
-    expect(caps.maxContext).toBe(1000000); // Gemini 1.5 Pro
+    expect(caps.maxContext).toBe(1000000);
   });
 
   it('marks OpenRouter OpenAI/Anthropic routes as cache-capable (per-model predicate)', () => {
@@ -53,6 +53,7 @@ describe('getProviderCapabilities (v0.38 Slice 1 — D6/D7 recipe-driven capabil
       const caps = getProviderCapabilities(`deepseek:${model}`);
       expect(caps.maxContext).toBe(1_000_000);
       expect(caps.maxOutput).toBe(384_000);
+      expect(caps.supportsPromptCaching).toBe(true);
     }
   });
 
@@ -82,12 +83,17 @@ describe('classifyCapabilities (D6 — three-tier capability verdict)', () => {
     expect(classifyCapabilities('anthropic:claude-opus-4-7')).toBe('ok');
   });
 
-  it('returns degraded:no_caching for OpenAI (tools yes, caching no)', () => {
-    expect(classifyCapabilities('openai:gpt-5.2')).toBe('degraded:no_caching');
+  it('returns ok for DeepSeek because context caching is automatic', () => {
+    expect(classifyCapabilities('deepseek:deepseek-v4-flash')).toBe('ok');
+    expect(classifyCapabilities('deepseek:deepseek-v4-pro')).toBe('ok');
+  });
+
+  it('returns ok for OpenAI because prompt caching is automatic', () => {
+    expect(classifyCapabilities('openai:gpt-5.2')).toBe('ok');
   });
 
   it('returns degraded:no_caching for Google Gemini', () => {
-    expect(classifyCapabilities('google:gemini-1.5-pro')).toBe('degraded:no_caching');
+    expect(classifyCapabilities('google:gemini-2.0-flash')).toBe('degraded:no_caching');
   });
 
   it('returns ok for cacheable OpenRouter routes, degraded:no_caching otherwise', () => {

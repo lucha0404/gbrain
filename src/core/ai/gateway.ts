@@ -47,10 +47,8 @@ import type {
   TouchpointKind,
 } from './types.ts';
 import { resolveRecipe, assertTouchpoint, parseModelId } from './model-resolver.ts';
-import {
-  OPENROUTER_CACHE_HEADER,
-  openrouterRequiresExplicitPromptCache,
-} from './recipes/openrouter.ts';
+import { OPENROUTER_CACHE_HEADER } from './recipes/openrouter.ts';
+import { resolvePromptCacheMode } from './capabilities.ts';
 import { resolveModel, TIER_DEFAULTS } from '../model-config.ts';
 import { parseLlmJson } from '../llm-json.ts';
 import type { BrainEngine } from '../engine.ts';
@@ -2947,11 +2945,39 @@ export interface ChatOpts {
   maxTokens?: number;
   abortSignal?: AbortSignal;
   /**
-   * Anthropic-specific: cache the system prompt + last tool def. Silently
-   * ignored on providers without `supports_prompt_cache`.
+   * Ask the provider for JSON through AI SDK's standardized response-format
+   * channel. This is deliberately schema-free: OpenAI-compatible providers
+   * translate it to `json_object`, while native providers use their own JSON
+   * mechanism. Callers remain responsible for domain validation.
+   */
+  responseFormat?: 'text' | 'json';
+  /**
+   * Request explicit caching for stable system/tool prefixes. Automatic-cache
+   * providers need no mutation; providers without an explicit marker dialect
+   * safely ignore this option.
    */
   cacheSystem?: boolean;
 }
+
+/**
+ * JSON-mode output that preserves the raw text for caller-owned validation.
+ * `Output.json()` would parse inside AI SDK and throw before a caller can
+ * classify malformed JSON and issue a bounded repair request. The response
+ * format is still the same provider-neutral `{ type: 'json' }` signal.
+ */
+const JSON_TEXT_OUTPUT = {
+  name: 'json-text',
+  responseFormat: Promise.resolve({ type: 'json' as const }),
+  async parseCompleteOutput({ text }: { text: string }): Promise<string> {
+    return text;
+  },
+  async parsePartialOutput({ text }: { text: string }): Promise<{ partial: string }> {
+    return { partial: text };
+  },
+  createElementStreamTransform(): undefined {
+    return undefined;
+  },
+};
 
 /**
  * v0.41.x (#1698) — id-validity core. Shared by `runThink`'s explicit-model gate
@@ -3023,17 +3049,6 @@ export function probeChatModel(modelStr: string): ChatModelProbe {
     };
   }
   return { ok: true };
-}
-
-/**
- * Per-model prompt-cache capability: `supports_prompt_cache` may be a static
- * boolean (native providers) or a per-model-id predicate (OpenRouter's
- * family-scoped caching).
- */
-function chatSupportsPromptCache(recipe: Recipe, modelId: string): boolean {
-  const support = recipe.touchpoints.chat?.supports_prompt_cache;
-  if (typeof support === 'function') return support(modelId);
-  return support === true;
 }
 
 async function resolveChatProvider(modelStr: string): Promise<{ model: any; recipe: Recipe; modelId: string }> {
@@ -3367,8 +3382,11 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
   const { model, recipe, modelId } = await resolveChatProvider(modelStr);
   const cfg = requireConfig();
 
-  const supportsCache = chatSupportsPromptCache(recipe, modelId);
-  const useCache = !!opts.cacheSystem && supportsCache;
+  const promptCacheMode = resolvePromptCacheMode(recipe, modelId);
+  // Automatic providers (DeepSeek, routed OpenAI) need no request mutation.
+  // `cacheSystem` only activates the one explicit marker dialect we support.
+  const useExplicitCacheMarkers =
+    !!opts.cacheSystem && promptCacheMode === 'anthropic-explicit';
 
   // OpenRouter Claude routes need an explicit `cache_control` on the system
   // content block, but the openai-compatible adapter drops anthropic-namespace
@@ -3376,14 +3394,14 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
   // header; the recipe's compat fetch shim rewrites the body and strips the
   // header before the request leaves the process. OpenAI routes through
   // OpenRouter cache automatically — no marker needed.
-  const requestHeaders = useCache && recipe.id === 'openrouter' && openrouterRequiresExplicitPromptCache(modelId)
+  const requestHeaders = useExplicitCacheMarkers && recipe.id === 'openrouter'
     ? { [OPENROUTER_CACHE_HEADER]: '1' }
     : undefined;
 
   const tools = toAISDKTools(opts.tools);
 
   const providerOptions: Record<string, any> = {};
-  if (useCache) {
+  if (useExplicitCacheMarkers) {
     // Call-level `providerOptions.anthropic.cacheControl` is NOT a no-op:
     // @ai-sdk/anthropic 3.0.47+ passes it through as a top-level
     // `cache_control` field on the Anthropic request body, which the
@@ -3429,7 +3447,7 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
   // `providerOptions.anthropic.cacheControl` via the deep-merge above —
   // reusing it here (instead of hardcoding `{ type: 'ephemeral' }` per
   // breakpoint) keeps every marker in the request on the same TTL.
-  const cacheControlValue: { type: 'ephemeral'; ttl?: '5m' | '1h' } | undefined = useCache
+  const cacheControlValue: { type: 'ephemeral'; ttl?: '5m' | '1h' } | undefined = useExplicitCacheMarkers
     ? (providerOptions.anthropic?.cacheControl ?? { type: 'ephemeral' })
     : undefined;
 
@@ -3469,7 +3487,7 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
   // nothing. Passing a `SystemModelMessage` object instead — the shape `ai`
   // documents specifically for "additional provider options (e.g. for
   // caching)" — round-trips `providerOptions` onto that block. Byte-identical
-  // to the old bare-string form when useCache is false. Reuses
+  // to the old bare-string form when explicit markers are off. Reuses
   // `cacheControlValue` (the config-merged value) so this breakpoint's TTL
   // always matches the last-tool and call-level breakpoints.
   const systemParam = cacheControlValue && opts.system
@@ -3486,6 +3504,7 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
       system: systemParam,
       messages: toModelMessages(repairToolPairing(opts.messages)) as any,
       tools: opts.tools && opts.tools.length > 0 ? tools : undefined,
+      ...(opts.responseFormat === 'json' ? { output: JSON_TEXT_OUTPUT } : {}),
       maxOutputTokens: opts.maxTokens ?? defaultMaxOutputTokens(modelStr),
       // v0.42.20.0 — default a chat timeout (composes with the caller's signal,
       // shorter wins). Covers native-anthropic (the default provider + facts Haiku).

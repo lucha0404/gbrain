@@ -15,6 +15,7 @@ import {
   OPENROUTER_CACHE_HEADER,
   openrouterCompatFetch,
   openrouterRequiresExplicitPromptCache,
+  openrouterPromptCacheMode,
   openrouterSupportsPromptCache,
 } from '../../src/core/ai/recipes/openrouter.ts';
 import { defaultResolveAuth } from '../../src/core/ai/gateway.ts';
@@ -158,7 +159,7 @@ describe('recipe: openrouter', () => {
 
   test('12. prompt cache capability is family-scoped, not a blanket claim', () => {
     const r = getRecipe('openrouter')!;
-    expect(r.touchpoints.chat!.supports_prompt_cache).toBe(openrouterSupportsPromptCache);
+    expect(r.touchpoints.chat!.prompt_cache_mode).toBe(openrouterPromptCacheMode);
 
     expect(openrouterSupportsPromptCache('openai/gpt-5.2')).toBe(true);
     expect(openrouterSupportsPromptCache('openai/gpt-5.2-chat')).toBe(true);

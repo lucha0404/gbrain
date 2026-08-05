@@ -53,7 +53,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'brd-'));
   oldHome = process.env.HOME; oldGbrainHome = process.env.GBRAIN_HOME;
   process.env.HOME = mkdtempSync(join(root, 'home-'));
-  process.env.GBRAIN_HOME = join(process.env.HOME, '.gbrain');
+  process.env.GBRAIN_HOME = process.env.HOME;
   process.env.GBRAIN_GIT_ALLOW_FILE_TRANSPORT = '1';
   makePair();
 });
@@ -124,7 +124,7 @@ describe('hardenBrainRepo', () => {
 
   test('D11 — writes a repo-scoped credential (0600 store, local config, ownership key)', async () => {
     await harden();
-    const store = join(process.env.GBRAIN_HOME!, 'git-credentials');
+    const store = join(process.env.GBRAIN_HOME!, '.gbrain', 'git-credentials');
     expect(existsSync(store)).toBe(true);
     expect(statSync(store).mode & 0o077).toBe(0); // not group/other readable
     expect(git(work, 'config', '--local', '--get', 'credential.helper')).toContain('store --file');
@@ -134,7 +134,7 @@ describe('hardenBrainRepo', () => {
   test('D11 — reuses an existing credential.helper (no plaintext store written)', async () => {
     git(work, 'config', 'credential.helper', 'osxkeychain');
     await harden();
-    const store = join(process.env.GBRAIN_HOME!, 'git-credentials');
+    const store = join(process.env.GBRAIN_HOME!, '.gbrain', 'git-credentials');
     expect(existsSync(store)).toBe(false);
     expect(git(work, 'config', '--local', '--get', 'credential.helper')).toBe('osxkeychain');
   });

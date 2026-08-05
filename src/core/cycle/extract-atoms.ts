@@ -218,9 +218,11 @@ Grounding rules are strict:
     numbers (CJK characters count), and directly support the atom body.
     Do not present a draft as a message that was actually sent.
   - Virality is only a framing score; it is never permission to exaggerate.
-  - If the source does not support at least one useful grounded atom, output [].
+  - If the source does not support at least one useful grounded atom, output
+    {"atoms":[]}.
 
-Output a JSON array of atoms (1-3 per transcript, never more than 3).
+Output a JSON object with exactly one atoms array (1-3 atoms per source,
+never more than 3): {"atoms":[...]}.
 Each atom: {title (≤80 chars), atom_type, body (2-4 sentences),
 source_quote (verbatim ≤200 chars and at least 8 Unicode letters/numbers),
 lesson (one sentence), concepts
@@ -234,7 +236,7 @@ concept pages (e.g. "captive-portal", "channel-pricing-strategy") — never
 entity or brand names. Use the same label for the same topic across atoms;
 prefer a label you already used over coining a near-synonym.
 
-Output ONLY the JSON array, no prose.`;
+Output ONLY the JSON object, no prose.`;
 
 interface DiscoveredPage {
   slug: string;
@@ -656,16 +658,18 @@ export async function runPhaseExtractAtoms(
     const originLabel = item.kind === 'transcript' ? item.filePath : item.slug;
     try {
       const sourceExcerpt = item.content.slice(0, 50_000);
-      const result = await chat({
+      const sourceMessage = `Source: ${originLabel}\n\n---\n\n${sourceExcerpt}`;
+      let result = await chat({
         model: extractModel,
         system: EXTRACT_PROMPT,
         messages: [
           {
             role: 'user',
-            content: `Source: ${originLabel}\n\n---\n\n${sourceExcerpt}`,
+            content: sourceMessage,
           },
         ],
         maxTokens: 4096,
+        responseFormat: 'json',
       });
       // Post-await yield: closes the "long LLM call past TTL" hazard
       // codex flagged. The 30s throttle inside maybeYield bounds the
@@ -674,14 +678,44 @@ export async function runPhaseExtractAtoms(
 
       estimatedSpendUsd = budgetTracker.totalSpent;
 
-      const parsedAtoms = parseAtomsResponseResult(result.text, sourceExcerpt);
-      if (parsedAtoms === null || (parsedAtoms.rawItemCount > 0 && parsedAtoms.atoms.length === 0)) {
-        const validationError = 'invalid atom response: JSON, schema, or source grounding validation failed';
-        console.error(`[extract_atoms] ${validationError} for ${originLabel}; leaving source retryable`);
-        failures.push({ source: originLabel, error: validationError });
-        continue;
+      let inspection = inspectAtomsResponse(result.text, sourceExcerpt);
+      if (!inspection.ok) {
+        const firstFailure = inspection.failure;
+        console.error(
+          `[extract_atoms] atom validation failed (${formatAtomFailure(firstFailure)}) ` +
+            `for ${originLabel}; requesting one repair`,
+        );
+        result = await chat({
+          model: extractModel,
+          system: EXTRACT_PROMPT,
+          messages: [
+            { role: 'user', content: sourceMessage },
+            { role: 'assistant', content: result.text },
+            {
+              role: 'user',
+              content: atomRepairFeedback(firstFailure),
+            },
+          ],
+          maxTokens: 4096,
+          responseFormat: 'json',
+        });
+        await maybeYield();
+        estimatedSpendUsd = budgetTracker.totalSpent;
+        inspection = inspectAtomsResponse(result.text, sourceExcerpt);
+        if (!inspection.ok) {
+          const failureTrail = firstFailure.code === inspection.failure.code
+            ? inspection.failure.code
+            : `${firstFailure.code}->${inspection.failure.code}`;
+          const validationError =
+            `invalid atom response after repair: ${failureTrail} (attempts=2)`;
+          console.error(
+            `[extract_atoms] ${validationError} for ${originLabel}; leaving source retryable`,
+          );
+          failures.push({ source: originLabel, error: validationError });
+          continue;
+        }
       }
-      const atoms = parsedAtoms.atoms;
+      const atoms = inspection.result.atoms;
       if (atoms.length === 0) {
         // #2144: tombstone zero-yield pages so they stop being rediscovered.
         // Idempotency is keyed on atom rows — a page that yields no atoms
@@ -856,72 +890,136 @@ export interface AtomsParseResult {
   rawItemCount: number;
 }
 
-/**
- * Parse an atom response while preserving whether the model produced a valid
- * JSON array. `null` means syntax/shape failure and must stay retryable; an
- * empty array is a legitimate zero-yield result that may be tombstoned.
- */
-export function parseAtomsResponseResult(raw: string, sourceText: string): AtomsParseResult | null {
-  // Strip markdown code fences if the LLM wrapped JSON in them.
+export type AtomResponseFailureCode =
+  | 'invalid_json'
+  | 'invalid_shape'
+  | 'too_many_atoms'
+  | 'invalid_schema'
+  | 'invalid_grounding';
+
+interface AtomResponseFailure {
+  code: AtomResponseFailureCode;
+  itemIndex?: number;
+}
+
+type AtomResponseInspection =
+  | { ok: true; result: AtomsParseResult }
+  | { ok: false; failure: AtomResponseFailure };
+
+function failedAtomResponse(
+  code: AtomResponseFailureCode,
+  itemIndex?: number,
+): AtomResponseInspection {
+  return {
+    ok: false,
+    failure: itemIndex === undefined ? { code } : { code, itemIndex },
+  };
+}
+
+function formatAtomFailure(failure: AtomResponseFailure): string {
+  return failure.itemIndex === undefined
+    ? failure.code
+    : `${failure.code},item=${failure.itemIndex}`;
+}
+
+function atomRepairFeedback(failure: AtomResponseFailure): string {
+  const focus = failure.code === 'invalid_grounding'
+    ? 'Every source_quote must be an exact verbatim substring of the supplied source and contain at least 8 letters or numbers.'
+    : failure.code === 'too_many_atoms'
+      ? 'Return no more than 3 atoms.'
+      : 'Follow the requested JSON object shape and atom field constraints exactly.';
+  return `Validation feedback: ${formatAtomFailure(failure)}. ${focus} ` +
+    'Repair the response and return only one JSON object shaped as {"atoms":[...]}. Do not add facts.';
+}
+
+function parseJsonResponse(raw: string): { ok: true; value: unknown } | { ok: false } {
   let cleaned = raw.trim();
-  const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenceMatch) cleaned = fenceMatch[1].trim();
 
-  // Find the first JSON array bracket.
-  const arrayStart = cleaned.indexOf('[');
-  if (arrayStart === -1) return null;
-  cleaned = cleaned.slice(arrayStart);
-
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(cleaned);
+    return { ok: true, value: JSON.parse(cleaned) };
   } catch {
-    // Try trimming back from the end to recover from trailing prose.
-    const arrayEnd = cleaned.lastIndexOf(']');
-    if (arrayEnd === -1) return null;
+    // Preserve the legacy tolerance for trailing prose. This is a generic
+    // JSON boundary recovery, not a provider-specific content regex.
+    const objectStart = cleaned.indexOf('{');
+    const arrayStart = cleaned.indexOf('[');
+    const starts = [objectStart, arrayStart].filter(index => index >= 0);
+    if (starts.length === 0) return { ok: false };
+    const start = Math.min(...starts);
+    const closing = cleaned[start] === '{' ? '}' : ']';
+    const end = cleaned.lastIndexOf(closing);
+    if (end <= start) return { ok: false };
     try {
-      parsed = JSON.parse(cleaned.slice(0, arrayEnd + 1));
+      return { ok: true, value: JSON.parse(cleaned.slice(start, end + 1)) };
     } catch {
-      return null;
+      return { ok: false };
     }
   }
+}
 
-  if (!Array.isArray(parsed) || parsed.length > 3) return null;
+function inspectAtomsResponse(raw: string, sourceText: string): AtomResponseInspection {
+  const json = parseJsonResponse(raw);
+  if (!json.ok) return failedAtomResponse('invalid_json');
+
+  let items: unknown[];
+  if (Array.isArray(json.value)) {
+    // Backward compatibility for stored fixtures and older providers.
+    items = json.value;
+  } else if (
+    typeof json.value === 'object' &&
+    json.value !== null &&
+    !Array.isArray(json.value) &&
+    Array.isArray((json.value as Record<string, unknown>).atoms)
+  ) {
+    items = (json.value as { atoms: unknown[] }).atoms;
+  } else {
+    return failedAtomResponse('invalid_shape');
+  }
+
+  if (items.length > 3) return failedAtomResponse('too_many_atoms');
   const normalizedSourceText = normalizedGroundingText(sourceText);
-
   const atoms: ExtractedAtom[] = [];
-  for (const item of parsed) {
-    if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
+
+  for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+    const item = items[itemIndex];
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      return failedAtomResponse('invalid_schema', itemIndex);
+    }
     const obj = item as Record<string, unknown>;
     const title = strictString(obj.title, 80);
     const atomType = typeof obj.atom_type === 'string' ? obj.atom_type : null;
     const body = strictString(obj.body);
     const sourceQuote = strictString(obj.source_quote, 200);
-    if (!title || !atomType || !body || !sourceQuote) return null;
-    if (!ATOM_TYPES.includes(atomType as typeof ATOM_TYPES[number])) return null;
-    const normalizedSourceQuote = normalizedGroundingText(sourceQuote);
-    if (countLetterNumberCodePoints(normalizedSourceQuote) < MIN_SOURCE_QUOTE_SIGNAL_CODE_POINTS) {
-      return null;
+    if (!title || !atomType || !body || !sourceQuote) {
+      return failedAtomResponse('invalid_schema', itemIndex);
     }
-    if (!normalizedSourceText.includes(normalizedSourceQuote)) {
-      return null;
+    if (!ATOM_TYPES.includes(atomType as typeof ATOM_TYPES[number])) {
+      return failedAtomResponse('invalid_schema', itemIndex);
+    }
+    const normalizedSourceQuote = normalizedGroundingText(sourceQuote);
+    if (
+      countLetterNumberCodePoints(normalizedSourceQuote) < MIN_SOURCE_QUOTE_SIGNAL_CODE_POINTS ||
+      !normalizedSourceText.includes(normalizedSourceQuote)
+    ) {
+      return failedAtomResponse('invalid_grounding', itemIndex);
     }
 
     let lesson: string | undefined;
     if (obj.lesson !== undefined) {
       lesson = strictString(obj.lesson) ?? undefined;
-      if (!lesson) return null;
+      if (!lesson) return failedAtomResponse('invalid_schema', itemIndex);
     }
 
     let concepts: string[] | undefined;
     if (obj.concepts !== undefined) {
       if (!Array.isArray(obj.concepts) || obj.concepts.length < 1 || obj.concepts.length > 3) {
-        return null;
+        return failedAtomResponse('invalid_schema', itemIndex);
       }
       if (!obj.concepts.every((concept): concept is string =>
         typeof concept === 'string' && CONCEPT_LABEL_RE.test(concept)
       )) {
-        return null;
+        return failedAtomResponse('invalid_schema', itemIndex);
       }
       concepts = obj.concepts;
     }
@@ -934,7 +1032,7 @@ export function parseAtomsResponseResult(raw: string, sourceText: string): Atoms
         obj.virality_score < 0 ||
         obj.virality_score > 100
       ) {
-        return null;
+        return failedAtomResponse('invalid_schema', itemIndex);
       }
       viralityScore = obj.virality_score;
     }
@@ -945,7 +1043,7 @@ export function parseAtomsResponseResult(raw: string, sourceText: string): Atoms
         typeof obj.emotional_register !== 'string' ||
         !EMOTIONAL_REGISTERS.has(obj.emotional_register)
       ) {
-        return null;
+        return failedAtomResponse('invalid_schema', itemIndex);
       }
       emotionalRegister = obj.emotional_register;
     }
@@ -961,7 +1059,18 @@ export function parseAtomsResponseResult(raw: string, sourceText: string): Atoms
       emotional_register: emotionalRegister,
     });
   }
-  return { atoms, rawItemCount: parsed.length };
+  return { ok: true, result: { atoms, rawItemCount: items.length } };
+}
+
+/**
+ * Parse an atom response while preserving whether the model produced a valid
+ * JSON atom payload (the JSON-mode object or a legacy bare array). `null`
+ * means syntax/shape failure and must stay retryable; an empty atoms list is
+ * a legitimate zero-yield result that may be tombstoned.
+ */
+export function parseAtomsResponseResult(raw: string, sourceText: string): AtomsParseResult | null {
+  const inspected = inspectAtomsResponse(raw, sourceText);
+  return inspected.ok ? inspected.result : null;
 }
 
 function strictString(value: unknown, maxCodePoints?: number): string | null {

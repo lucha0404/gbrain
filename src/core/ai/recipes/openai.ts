@@ -33,7 +33,9 @@ export const openai: Recipe = {
       models: ['gpt-5.2', 'gpt-4o-mini'],
       supports_tools: true,
       supports_subagent_loop: true,
-      supports_prompt_cache: false,
+      // OpenAI caches eligible repeated prefixes automatically on GPT-4o and
+      // newer models. No Anthropic-style cache-control markers are required.
+      prompt_cache_mode: 'automatic',
       max_context_tokens: 200000,
       cost_per_1m_input_usd: 1.25, // gpt-5.2 baseline
       cost_per_1m_output_usd: 10.0,

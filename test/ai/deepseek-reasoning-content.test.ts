@@ -75,6 +75,22 @@ describe('deepseekReasoningContentCompatFetch', () => {
     expect(res.headers.get('content-length')).toBeNull();
     expect((await res.json()).choices[0].message.content).toBe('x');
   });
+
+  test('normalizes DeepSeek cache-hit usage for AI SDK telemetry', async () => {
+    stubFetch({
+      choices: [{ message: { content: 'answer' } }],
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 10,
+        prompt_cache_hit_tokens: 72,
+        prompt_cache_miss_tokens: 28,
+      },
+    });
+    const res = await deepseekReasoningContentCompatFetch('u');
+    const json = await res.json();
+    expect(json.usage.prompt_tokens_details.cached_tokens).toBe(72);
+    expect(json.usage.prompt_cache_hit_tokens).toBe(72);
+  });
 });
 
 describe('applyOpenAICompatConfig — compat.fetch wiring (gateway seam)', () => {

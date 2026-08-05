@@ -136,7 +136,7 @@ describe('gbrain#2490 — Anthropic cache breakpoint placement', () => {
     expect(args.tools).toBeUndefined();
   });
 
-  test('cacheSystem:true on a non-Anthropic model is silently ignored (supports_prompt_cache=false)', async () => {
+  test('cacheSystem:true on a provider without an explicit marker mode is silently ignored', async () => {
     let captured: any;
     __setGenerateTextTransportForTests(async (args: any) => {
       captured = args;
@@ -157,8 +157,36 @@ describe('gbrain#2490 — Anthropic cache breakpoint placement', () => {
       messages: [{ role: 'user', content: 'hello' }],
     });
     // Still a bare string — the recipe doesn't support prompt caching, so
-    // useCache is false regardless of the caller's request.
+    // Explicit markers stay off regardless of the caller's request.
     expect(captured.system).toBe('SYS');
+  });
+
+  test('DeepSeek automatic caching is recognized without Anthropic markers', async () => {
+    let captured: any;
+    __setGenerateTextTransportForTests(async (args: any) => {
+      captured = args;
+      return {
+        content: [{ type: 'text', text: 'ok' }],
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      } as any;
+    });
+    configureGateway({
+      chat_model: 'deepseek:deepseek-v4-flash',
+      env: { DEEPSEEK_API_KEY: 'fake' },
+    });
+    await chat({
+      model: 'deepseek:deepseek-v4-flash',
+      system: 'stable prefix',
+      cacheSystem: true,
+      tools: [{ name: 'search', description: 'search', inputSchema: { type: 'object', properties: {} } }],
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+
+    expect(captured.system).toBe('stable prefix');
+    expect(captured.providerOptions).toBeUndefined();
+    expect(captured.tools.search.providerOptions).toBeUndefined();
+    expect(captured.headers).toBeUndefined();
   });
 
   test('a configured cacheControl TTL override applies to every breakpoint, not just the call-level one', async () => {
@@ -242,12 +270,14 @@ describe('OpenRouter prompt caching (takeover of PR #1988)', () => {
   test('cacheSystem:true on an OpenRouter OpenAI route needs no marker (OR caches OpenAI automatically)', async () => {
     const args = await captureOpenRouterArgs('openrouter:openai/gpt-5.2', true);
     expect(args.headers).toBeUndefined();
+    expect(args.system).toBe('stable system prompt');
+    expect(args.providerOptions).toBeUndefined();
   });
 
   test('cacheSystem:true on a non-cacheable OpenRouter route is silently ignored', async () => {
     const args = await captureOpenRouterArgs('openrouter:deepseek/deepseek-chat', true);
     expect(args.headers).toBeUndefined();
-    // useCache is false → system stays a bare string.
+    // Explicit markers stay off → system remains a bare string.
     expect(args.system).toBe('stable system prompt');
   });
 });

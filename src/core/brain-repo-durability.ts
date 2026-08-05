@@ -38,6 +38,7 @@ import {
 } from './git-remote.ts';
 import { findResolverFile, RESOLVER_FILENAMES } from './resolver-filenames.ts';
 import { redactSecretsInText } from './minions/handlers/shell-redact.ts';
+import { gbrainPath } from './config.ts';
 // Static import → bundled into the --compile binary so the taxonomy never drifts
 // and needs no runtime skills/ directory.
 import filingRulesDoc from '../../skills/_brain-filing-rules.json';
@@ -93,7 +94,7 @@ const HELPER_REL = 'scripts/brain-commit-push.sh';
 const CRED_MANAGED_KEY = 'gbrain.durability.managedcredential';
 
 function gbrainHome(): string {
-  return process.env.GBRAIN_HOME || join(process.env.HOME || '', '.gbrain');
+  return gbrainPath();
 }
 
 /** Resolve the gbrain CLI path for the cron wrapper (inlined to avoid a
@@ -130,7 +131,7 @@ function pushLogPath(): string {
 const PUSH_RETRY = `# --- gbrain durability push-retry (generated; one source of truth) ---
 brain_push() {
   _branch="$1"
-  _log="\${GBRAIN_HOME:-$HOME/.gbrain}/brain-push.log"
+  _log="$_gbrain_dir/brain-push.log"
   mkdir -p "$(dirname "$_log")" 2>/dev/null || true
   _gd="$(git rev-parse --git-dir 2>/dev/null || echo .git)"
   # Serialize concurrent pushes (commit bursts) so they coalesce instead of a
@@ -159,9 +160,13 @@ ${HOOK_BANNER}
 # Bypass: git commit --no-verify.
 set -euo pipefail
 
+# GBRAIN_HOME is the parent of .gbrain, matching gbrainPath()/configDir().
+_gbrain_dir="\${GBRAIN_HOME:+\${GBRAIN_HOME}/.gbrain}"
+[ -n "$_gbrain_dir" ] || _gbrain_dir="$HOME/.gbrain"
+
 _branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
 if [ "$_branch" = "HEAD" ]; then
-  echo "$(date -u +%FT%TZ) [push] detached HEAD; skip" >> "\${GBRAIN_HOME:-$HOME/.gbrain}/brain-push.log" 2>/dev/null || true
+  echo "$(date -u +%FT%TZ) [push] detached HEAD; skip" >> "$_gbrain_dir/brain-push.log" 2>/dev/null || true
   exit 0
 fi
 
@@ -182,6 +187,10 @@ ${HELPER_BANNER}
 #   scripts/brain-commit-push.sh "message" <path> [path ...]
 #   scripts/brain-commit-push.sh --push-only [branch]
 set -euo pipefail
+
+# GBRAIN_HOME is the parent of .gbrain, matching gbrainPath()/configDir().
+_gbrain_dir="\${GBRAIN_HOME:+\${GBRAIN_HOME}/.gbrain}"
+[ -n "$_gbrain_dir" ] || _gbrain_dir="$HOME/.gbrain"
 
 ${PUSH_RETRY}
 
@@ -207,7 +216,7 @@ if git diff --cached --quiet; then echo "nothing to commit"; exit 0; fi
 git commit -m "$_msg"
 
 if brain_push "$_branch"; then exit 0; fi
-echo "PUSH FAILED — commit is local-only, NEEDS ATTENTION (see ${'$'}{GBRAIN_HOME:-$HOME/.gbrain}/brain-push.log)" >&2
+echo "PUSH FAILED — commit is local-only, NEEDS ATTENTION (see $_gbrain_dir/brain-push.log)" >&2
 exit 4
 `;
 }

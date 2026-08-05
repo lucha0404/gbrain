@@ -1,4 +1,4 @@
-import type { Recipe } from '../types.ts';
+import type { PromptCacheMode, Recipe } from '../types.ts';
 
 /**
  * Private in-process marker header. `gateway.chat()` sets it when the caller
@@ -23,15 +23,22 @@ export const OPENROUTER_CACHE_HEADER = 'x-gbrain-anthropic-prompt-cache';
  * blessing every routed model family forever.
  */
 export function openrouterSupportsPromptCache(modelId: string): boolean {
-  const normalized = modelId.trim().toLowerCase();
-  if (normalized.startsWith('openai/gpt-') || /^openai\/o\d/.test(normalized)) return true;
-  if (normalized.startsWith('anthropic/claude-')) return true;
-  return false;
+  return openrouterPromptCacheMode(modelId) !== 'none';
 }
 
 /** Only Anthropic Claude routes need an explicit cache_control block. */
 export function openrouterRequiresExplicitPromptCache(modelId: string): boolean {
-  return modelId.trim().toLowerCase().startsWith('anthropic/claude-');
+  return openrouterPromptCacheMode(modelId) === 'anthropic-explicit';
+}
+
+/** Distinguish automatic OpenAI caching from Anthropic marker activation. */
+export function openrouterPromptCacheMode(modelId: string): PromptCacheMode {
+  const normalized = modelId.trim().toLowerCase();
+  if (normalized.startsWith('openai/gpt-') || /^openai\/o\d/.test(normalized)) {
+    return 'automatic';
+  }
+  if (normalized.startsWith('anthropic/claude-')) return 'anthropic-explicit';
+  return 'none';
 }
 
 /**
@@ -210,7 +217,7 @@ export const openrouter: Recipe = {
       supports_subagent_loop: false,
       // Family-scoped: OpenAI routes cache automatically; Anthropic routes
       // cache via the compat fetch shim's cache_control rewrite.
-      supports_prompt_cache: openrouterSupportsPromptCache,
+      prompt_cache_mode: openrouterPromptCacheMode,
       // No max_context_tokens: catalog spans 128K to 1M+; a single recipe-wide
       // value is either unsafe for smaller models or wasteful for larger ones.
       // Let upstream errors surface per-model.

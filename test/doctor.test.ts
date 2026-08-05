@@ -64,9 +64,9 @@ describe('doctor command', () => {
         return config.get(key) ?? null;
       },
     } as any);
-    expect(check.status).toBe('warn');
-    expect(check.message).toContain('models.subagent is "openai:gpt-5.2"');
-    expect(check.message).toContain('prompt caching');
+    expect(check.status).toBe('ok');
+    expect(check.message).toContain('via models.subagent to "openai:gpt-5.2"');
+    expect(check.message).not.toContain('runs hot');
   });
 
   test('subagent_capability reports explicit models.subagent on the ok path', async () => {
@@ -84,6 +84,18 @@ describe('doctor command', () => {
     expect(check.message).toContain('Subagent model resolves via models.subagent to "anthropic:claude-opus-4-7"');
   });
 
+  test('subagent_capability accepts DeepSeek automatic context caching', async () => {
+    const { checkSubagentCapability } = await import('../src/commands/doctor.ts');
+    const check = await checkSubagentCapability({
+      async getConfig(key: string): Promise<string | null> {
+        return key === 'models.subagent' ? 'deepseek:deepseek-v4-flash' : null;
+      },
+    } as any);
+    expect(check.status).toBe('ok');
+    expect(check.message).toContain('deepseek:deepseek-v4-flash');
+    expect(check.message).not.toContain('runs hot');
+  });
+
   test('subagent_capability checks models.default before tier fallback', async () => {
     const { checkSubagentCapability } = await import('../src/commands/doctor.ts');
     const config = new Map<string, string | null>([
@@ -95,8 +107,8 @@ describe('doctor command', () => {
         return config.get(key) ?? null;
       },
     } as any);
-    expect(check.status).toBe('warn');
-    expect(check.message).toContain('models.default is "openai:gpt-5.2"');
+    expect(check.status).toBe('ok');
+    expect(check.message).toContain('via models.default to "openai:gpt-5.2"');
   });
 
   test('reranker_health warns on repeated unknown rerank failures', async () => {

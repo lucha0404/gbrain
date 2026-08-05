@@ -24,6 +24,21 @@
 import { resolveRecipe } from './model-resolver.ts';
 import { listRecipes } from './recipes/index.ts';
 import { AIConfigError } from './errors.ts';
+import type { PromptCacheMode, Recipe } from './types.ts';
+
+/** Resolve cache availability separately from request-marker mechanics. */
+export function resolvePromptCacheMode(recipe: Recipe, modelId: string): PromptCacheMode {
+  const declared = recipe.touchpoints.chat?.prompt_cache_mode;
+  if (typeof declared === 'function') return declared(modelId);
+  if (declared) return declared;
+
+  // Backward compatibility for recipes outside the built-in registry. The
+  // historical boolean meant "Anthropic markers are honored", not automatic
+  // server-side caching, so true keeps that exact behavior.
+  const legacy = recipe.touchpoints.chat?.supports_prompt_cache;
+  const supported = typeof legacy === 'function' ? legacy(modelId) : legacy === true;
+  return supported ? 'anthropic-explicit' : 'none';
+}
 
 export interface ModelTokenLimits {
   /** Maximum input context accepted by the model. */
@@ -92,8 +107,8 @@ export interface ProviderCapabilities {
   supportsToolCalling: boolean;
 
   /**
-   * Anthropic-style ephemeral prompt cache markers honored. When false, the
-   * loop runs hot (no cache_control injection) and per-turn costs scale
+   * Prompt caching is available, either automatically or via explicit
+   * provider markers. When false, the loop runs hot and per-turn costs scale
    * linearly with conversation length. Doesn't break the loop; just costs more.
    */
   supportsPromptCaching: boolean;
@@ -188,13 +203,11 @@ export function getProviderCapabilities(modelString: string): ProviderCapabiliti
   // boundary; this function returns capabilities for whatever the user asked
   // for, on the assumption it'll be validated elsewhere.
 
-  const promptCache = chat.supports_prompt_cache;
+  const promptCacheMode = resolvePromptCacheMode(recipe, parsed.modelId);
 
   return {
     supportsToolCalling: chat.supports_tools === true,
-    supportsPromptCaching: typeof promptCache === 'function'
-      ? promptCache(parsed.modelId)
-      : promptCache === true,
+    supportsPromptCaching: promptCacheMode !== 'none',
     // No recipe exposes parallel-tools-specifically yet; gate on supports_tools.
     // Subsequent waves can split this into its own recipe field if a provider
     // ever supports tools without parallel dispatch.

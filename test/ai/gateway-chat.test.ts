@@ -46,15 +46,17 @@ describe('chat touchpoint — recipe registry', () => {
     }
   });
 
-  test('only Anthropic and model-family-gated OpenRouter claim supports_prompt_cache', () => {
+  test('cache capability distinguishes automatic and explicit-marker providers', () => {
     for (const r of listRecipes()) {
       if (!r.touchpoints.chat) continue;
       if (r.id === 'anthropic') {
-        expect(r.touchpoints.chat.supports_prompt_cache).toBe(true);
+        expect(r.touchpoints.chat.prompt_cache_mode).toBe('anthropic-explicit');
+      } else if (r.id === 'openai') {
+        expect(r.touchpoints.chat.prompt_cache_mode).toBe('automatic');
+      } else if (r.id === 'deepseek') {
+        expect(r.touchpoints.chat.prompt_cache_mode).toBe('automatic');
       } else if (r.id === 'openrouter') {
-        // Family-scoped predicate (openai/* + anthropic/claude-*), never a
-        // blanket true — see recipe-openrouter.test.ts for the model matrix.
-        expect(typeof r.touchpoints.chat.supports_prompt_cache).toBe('function');
+        expect(typeof r.touchpoints.chat.prompt_cache_mode).toBe('function');
       } else {
         expect(r.touchpoints.chat.supports_prompt_cache ?? false).toBe(false);
       }
@@ -358,6 +360,29 @@ describe('chat touchpoint — provider_chat_options passthrough', () => {
     expect(providerOptions).toEqual({
       anthropic: { thinking: { type: 'disabled' } },
     });
+  });
+
+  test('provider-neutral JSON mode reaches the AI SDK response format', async () => {
+    let capturedOutput: any;
+    __setGenerateTextTransportForTests(async (args: any) => {
+      capturedOutput = args.output;
+      return {
+        content: [{ type: 'text', text: '{"ok":true}' }],
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      } as any;
+    });
+    configureGateway({
+      chat_model: 'deepseek:deepseek-v4-flash',
+      env: { DEEPSEEK_API_KEY: 'fake' },
+    });
+
+    await chat({
+      messages: [{ role: 'user', content: 'Return JSON.' }],
+      responseFormat: 'json',
+    });
+
+    expect(await capturedOutput.responseFormat).toEqual({ type: 'json' });
   });
 
   test('model-scoped option overrides provider-scoped option', async () => {

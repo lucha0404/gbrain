@@ -15,7 +15,7 @@ import { hardenBrainRepo } from '../src/core/brain-repo-durability.ts';
 // process.env at startup, so without it the spawned git — and any post-commit
 // hook it fires — is blind to beforeEach's HOME/GBRAIN_HOME mutations (the
 // same Bun quirk as #2747, see resolveGbrainCliPath in brain-repo-durability).
-// Pre-fix, the hook under test resolved ${GBRAIN_HOME:-$HOME/.gbrain} to the
+// Pre-fix, the hook under test resolved GBRAIN_HOME as the .gbrain directory
 // OPERATOR'S REAL ~/.gbrain: it wrote its log lines there (polluting the real
 // brain-push.log on every run), the LOCAL-ONLY test never saw them in the
 // temp log it polls, and the assertion only passed when the scaffolding push
@@ -55,7 +55,7 @@ async function waitForOrigin(bare: string, expectSha: string, ms = 30_000): Prom
  * calls ("Unable to create '.../.git/index.lock': File exists"). Wait for the
  * detached push's terminal log line before handing the repo to the test. */
 async function waitForHookPushSettled(ms = 30_000): Promise<void> {
-  const log = join(process.env.GBRAIN_HOME!, 'brain-push.log');
+  const log = join(process.env.GBRAIN_HOME!, '.gbrain', 'brain-push.log');
   const terminal = /\[push\] (ok|lock-timeout|LOCAL-ONLY)/;
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
@@ -72,7 +72,7 @@ beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'bdh-'));
   oldHome = process.env.HOME; oldGbrainHome = process.env.GBRAIN_HOME;
   process.env.HOME = mkdtempSync(join(root, 'home-'));
-  process.env.GBRAIN_HOME = join(process.env.HOME, '.gbrain');
+  process.env.GBRAIN_HOME = process.env.HOME;
   process.env.GBRAIN_GIT_ALLOW_FILE_TRANSPORT = '1';
   bare = mkdtempSync(join(root, 'origin-')) + '.git';
   execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare], { stdio: 'ignore', env: process.env });
@@ -179,7 +179,7 @@ describe('post-commit hook (D9 local, D7 self-contained)', () => {
     git(work, 'remote', 'set-url', 'origin', join(root, 'gone2.git'));
     writeFileSync(join(work, 'orphan.md'), 'o\n');
     git(work, 'add', 'orphan.md'); git(work, 'commit', '-qm', 'orphan');
-    const log = join(process.env.GBRAIN_HOME!, 'brain-push.log');
+    const log = join(process.env.GBRAIN_HOME!, '.gbrain', 'brain-push.log');
     const deadline = Date.now() + 30_000;
     let found = false;
     while (Date.now() < deadline) {

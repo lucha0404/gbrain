@@ -249,12 +249,22 @@ export interface ChatTouchpoint {
    */
   supports_subagent_loop: boolean;
   /**
-   * Prompt caching honored for this chat touchpoint. Static booleans cover
-   * native providers; openai-compatible aggregators may decide per model id
-   * (e.g. OpenRouter caches OpenAI and Anthropic routes but not every routed
-   * model family).
+   * Legacy prompt-cache capability flag. New built-in recipes should use
+   * `prompt_cache_mode` so availability cannot be confused with marker
+   * mechanics.
+   * @deprecated Use `prompt_cache_mode`.
    */
   supports_prompt_cache?: boolean | ((modelId: string) => boolean);
+  /**
+   * How prompt caching is activated. `automatic` means the provider caches
+   * matching prefixes without request mutation. `anthropic-explicit` means
+   * callers may request Anthropic cache-control markers via `cacheSystem`.
+   * A function supports family-scoped aggregators such as OpenRouter.
+   *
+   * When absent, the legacy `supports_prompt_cache` field is still honored;
+   * legacy `true` maps to `anthropic-explicit` for backward compatibility.
+   */
+  prompt_cache_mode?: PromptCacheMode | ((modelId: string) => PromptCacheMode);
   /**
    * Backend honors OpenAI structured outputs (a strict `json_schema`
    * response_format). Threaded into `createOpenAICompatible`'s
@@ -271,6 +281,8 @@ export interface ChatTouchpoint {
   cost_per_1m_output_usd?: number;
   price_last_verified?: string;
 }
+
+export type PromptCacheMode = 'none' | 'automatic' | 'anthropic-explicit';
 
 export interface Recipe {
   /** Stable lowercase id used in `provider:model` strings. Unique across recipes. */

@@ -89,6 +89,18 @@ describe('v0.41 T5: parseAtomsResponse', () => {
     expect(parseAtomsResponse(raw, source).length).toBe(1);
   });
 
+  test('parses the JSON-object wrapper required by provider JSON mode', () => {
+    const raw = `{"atoms":[{"title":"Test","atom_type":"insight","body":"body text","source_quote":"source quote"}]}`;
+    const atoms = parseAtomsResponse(raw, source);
+    expect(atoms).toHaveLength(1);
+    expect(atoms[0].title).toBe('Test');
+  });
+
+  test('keeps accepting the legacy bare JSON array', () => {
+    const raw = `[{"title":"Legacy","atom_type":"insight","body":"body text","source_quote":"source quote"}]`;
+    expect(parseAtomsResponse(raw, source)[0].title).toBe('Legacy');
+  });
+
   test('tolerates trailing prose after JSON', () => {
     const raw = `[{"title":"T","atom_type":"framework","body":"b","source_quote":"source quote"}]\n\nThanks!`;
     expect(parseAtomsResponse(raw, source).length).toBe(1);
@@ -248,6 +260,79 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
     expect(capturedSystem).toContain('at least 8 Unicode letters');
     expect(capturedSystem).toContain('Do not present a draft as a message that was actually sent');
     expect(capturedSystem).toContain('Virality is only a framing score');
+    expect(capturedSystem).toContain('{"atoms"');
+  });
+
+  test('repairs one invalid grounded response using validation feedback', async () => {
+    const source = 'This exact source quote is long enough to ground the atom.';
+    const calls: ChatOpts[] = [];
+    const responses = [
+      `{"atoms":[{"title":"Bad","atom_type":"insight","body":"unsupported","source_quote":"a quote absent from the source"}]}`,
+      `{"atoms":[{"title":"Grounded","atom_type":"insight","body":"The source contains an exact quote.","source_quote":"This exact source quote is long enough"}]}`,
+    ];
+    const chat = async (o: ChatOpts): Promise<ChatResult> => {
+      calls.push(o);
+      const text = responses[calls.length - 1]!;
+      return {
+        text,
+        blocks: [{ type: 'text', text }],
+        stopReason: 'end',
+        usage: { input_tokens: 10, output_tokens: 10, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        model: 'deepseek:deepseek-v4-flash',
+        providerId: 'deepseek',
+      };
+    };
+
+    const result = await runPhaseExtractAtoms(engine, {
+      _transcripts: [{ filePath: '/repair.txt', content: source, contentHash: 'repair-hash' }],
+      _pages: [],
+      _chat: chat as typeof import('../../src/core/ai/gateway.ts').chat,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls.every(call => call.responseFormat === 'json')).toBe(true);
+    expect(calls[1].messages.at(-1)?.content).toContain('invalid_grounding');
+    expect(result.details?.atoms_extracted).toBe(1);
+    expect(result.details?.failures).toEqual([]);
+  });
+
+  test('two invalid responses leave the page retryable and expose only failure codes', async () => {
+    const source = 'This page has sufficiently long source material for retry testing.';
+    let invalidCalls = 0;
+    const invalidChat = async (_o: ChatOpts): Promise<ChatResult> => {
+      invalidCalls++;
+      const text = 'not json';
+      return {
+        text,
+        blocks: [{ type: 'text', text }],
+        stopReason: 'end',
+        usage: { input_tokens: 10, output_tokens: 10, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        model: 'deepseek:deepseek-v4-flash',
+        providerId: 'deepseek',
+      };
+    };
+
+    const failed = await runPhaseExtractAtoms(engine, {
+      _transcripts: [],
+      _pages: [{ slug: 'retry/page', content: source, contentHash: 'retry-page-hash' }],
+      _chat: invalidChat as typeof import('../../src/core/ai/gateway.ts').chat,
+    });
+
+    expect(invalidCalls).toBe(2);
+    expect(failed.details?.pages_processed).toBe(0);
+    expect(failed.details?.failures).toEqual([{
+      source: 'retry/page',
+      error: 'invalid atom response after repair: invalid_json (attempts=2)',
+    }]);
+    const afterFailure = await engine.getPage('retry/page');
+    expect(afterFailure?.frontmatter?.atoms_scan_hash).toBeUndefined();
+
+    const retry = await runPhaseExtractAtoms(engine, {
+      _transcripts: [],
+      _pages: [{ slug: 'retry/page', content: source, contentHash: 'retry-page-hash' }],
+      _chat: stubChat(`{"atoms":[{"title":"Retry worked","atom_type":"insight","body":"The retry used grounded source material.","source_quote":"This page has sufficiently long source material"}]}`),
+    });
+    expect(retry.details?.atoms_extracted).toBe(1);
   });
 
   test('no-op when no transcripts AND no pages provided', async () => {

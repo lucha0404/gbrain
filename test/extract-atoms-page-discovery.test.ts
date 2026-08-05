@@ -537,7 +537,7 @@ describe('#2144: zero-yield tombstone', () => {
     expect(result.status).toBe('warn');
     expect(result.details.failures).toEqual([{
       source: 'article/invalid-json',
-      error: 'invalid atom response: JSON, schema, or source grounding validation failed',
+      error: 'invalid atom response after repair: invalid_json (attempts=2)',
     }]);
     expect(result.details.pages_processed).toBe(0);
     const rows = await engine.executeRaw<{ scan: string | null }>(
