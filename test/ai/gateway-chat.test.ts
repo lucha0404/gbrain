@@ -25,6 +25,7 @@ import {
   getChatFallbackChain,
   recipeSupportsStructuredOutputs,
   parseExpansionResponse,
+  expand,
   chat,
   __setGenerateTextTransportForTests,
 } from '../../src/core/ai/gateway.ts';
@@ -119,6 +120,41 @@ describe('expansion — schemaless recovery (parseExpansionResponse)', () => {
     expect(parseExpansionResponse('{"queries":[]}')).toBeNull(); // min(1)
     expect(parseExpansionResponse('{"rewrites":["a"]}')).toBeNull(); // wrong key
     expect(parseExpansionResponse('{"queries":[1,2]}')).toBeNull(); // wrong item type
+  });
+});
+
+describe('expansion — configured provider options', () => {
+  beforeEach(() => {
+    resetGateway();
+    __setGenerateTextTransportForTests(null);
+  });
+
+  test('model-scoped DeepSeek thinking option reaches the expansion request', async () => {
+    let captured: Record<string, any> | undefined;
+    __setGenerateTextTransportForTests(async (args: any) => {
+      captured = args.providerOptions;
+      return {
+        text: '{"queries":["rewrite one","rewrite two"]}',
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      } as any;
+    });
+    configureGateway({
+      expansion_model: 'deepseek:deepseek-v4-flash',
+      provider_chat_options: {
+        'deepseek:deepseek-v4-flash': { thinking: { type: 'disabled' } },
+      },
+      env: { DEEPSEEK_API_KEY: 'fake' },
+    });
+
+    await expect(expand('source query')).resolves.toEqual([
+      'source query',
+      'rewrite one',
+      'rewrite two',
+    ]);
+    expect(captured).toEqual({
+      deepseek: { thinking: { type: 'disabled' } },
+    });
   });
 });
 

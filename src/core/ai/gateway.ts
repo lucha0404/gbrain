@@ -2564,6 +2564,12 @@ export async function expand(query: string): Promise<string[]> {
 
   try {
     const { model, recipe, modelId } = await resolveExpansionProvider(getExpansionModel());
+    const cfg = requireConfig();
+    const providerOptions: Record<string, any> = {};
+    applyConfiguredProviderOptions(providerOptions, cfg, recipe.id, modelId);
+    const configuredProviderOptions = Object.keys(providerOptions).length > 0
+      ? providerOptions
+      : undefined;
 
     let expansions: string[];
 
@@ -2572,10 +2578,11 @@ export async function expand(query: string): Promise<string[]> {
     // there, so generateObject would warn and silently degrade. generateText + a
     // tolerant parse recovers the queries instead. Fresh abortSignal per call.
     const viaText = async (): Promise<string[]> => {
-      const { text } = await generateText({
+      const { text } = await _generateTextTransport({
         model,
         abortSignal: withDefaultTimeout(undefined, AI_CHAT_TIMEOUT_MS),
         prompt: expansionPrompt,
+        providerOptions: configuredProviderOptions,
       });
       return parseExpansionResponse(text) ?? [];
     };
@@ -2588,6 +2595,7 @@ export async function expand(query: string): Promise<string[]> {
         schema: ExpansionSchema,
         abortSignal: withDefaultTimeout(undefined, AI_CHAT_TIMEOUT_MS),
         prompt: expansionPrompt,
+        providerOptions: configuredProviderOptions,
       });
       expansions = result.object?.queries ?? [];
     } else if (recipeSupportsStructuredOutputs(recipe)) {
@@ -2600,6 +2608,7 @@ export async function expand(query: string): Promise<string[]> {
           schema: ExpansionSchema,
           abortSignal: withDefaultTimeout(undefined, AI_CHAT_TIMEOUT_MS),
           prompt: expansionPrompt,
+          providerOptions: configuredProviderOptions,
         });
         expansions = result.object?.queries ?? [];
       } catch {
@@ -3193,7 +3202,7 @@ function deepMergeRecords(
   return out;
 }
 
-function applyConfiguredChatProviderOptions(
+function applyConfiguredProviderOptions(
   providerOptions: Record<string, any>,
   cfg: AIGatewayConfig,
   recipeId: string,
@@ -3411,7 +3420,7 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
     });
     if (promptCacheKey) providerOptions.openai = { promptCacheKey };
   }
-  applyConfiguredChatProviderOptions(providerOptions, cfg, recipe.id, modelId);
+  applyConfiguredProviderOptions(providerOptions, cfg, recipe.id, modelId);
 
   // Derive ONE canonical cache-control value AFTER config merging and reuse
   // it for every breakpoint (system block, last tool def, call-level). If

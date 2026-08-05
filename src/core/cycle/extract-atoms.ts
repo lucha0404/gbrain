@@ -187,13 +187,28 @@ interface ExtractedAtom {
 /** kebab-case validator for concept labels ("captive-portal", "channel-pricing"). */
 const CONCEPT_LABEL_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
-const EXTRACT_PROMPT = `You extract atomic content nuggets from a transcript.
+const EXTRACT_PROMPT = `You extract grounded atomic content nuggets from a source.
 
 An atom is a single-source, self-contained idea that could become a tweet,
 quote, or short essay angle. Each atom must:
   - Stand alone (no "as discussed above")
   - Have a clear point (not just descriptive)
   - Be specific (not a generic platitude)
+
+Grounding rules are strict:
+  - Every factual claim in title, body, source_quote, and lesson must be
+    directly supported by the source. Never invent numbers, causality,
+    outcomes, participant intent, or certainty.
+  - Preserve epistemic status. A plan, proposal, prediction, hypothesis,
+    draft message, or historical observation must remain labeled as such.
+  - Preserve scope. Do not turn one incident, meeting, customer, product, or
+    provider into a universal trend or rule. Avoid absolute wording such as
+    "always", "never", "must", "entirely", or "the key" unless the source
+    itself explicitly supports that exact scope.
+  - source_quote must be verbatim and must directly support the atom body.
+    Do not present a draft as a message that was actually sent.
+  - Virality is only a framing score; it is never permission to exaggerate.
+  - If the source does not support at least one useful grounded atom, output [].
 
 Output a JSON array of atoms (1-3 per transcript, never more than 3).
 Each atom: {title (≤80 chars), atom_type, body (2-4 sentences),
@@ -647,7 +662,12 @@ export async function runPhaseExtractAtoms(
 
       estimatedSpendUsd = budgetTracker.totalSpent;
 
-      const atoms = parseAtomsResponse(result.text);
+      const parsedAtoms = parseAtomsResponseResult(result.text);
+      if (parsedAtoms === null || (parsedAtoms.rawItemCount > 0 && parsedAtoms.atoms.length === 0)) {
+        console.error(`[extract_atoms] invalid atom JSON/schema for ${originLabel}; leaving source retryable`);
+        continue;
+      }
+      const atoms = parsedAtoms.atoms;
       if (atoms.length === 0) {
         // #2144: tombstone zero-yield pages so they stop being rediscovered.
         // Idempotency is keyed on atom rows — a page that yields no atoms
@@ -816,7 +836,17 @@ export async function runPhaseExtractAtoms(
  * common LLM mistakes: extra prose around the JSON, missing fields,
  * invalid atom_type values. Rejects (returns empty) on hard parse fail.
  */
-export function parseAtomsResponse(raw: string): ExtractedAtom[] {
+export interface AtomsParseResult {
+  atoms: ExtractedAtom[];
+  rawItemCount: number;
+}
+
+/**
+ * Parse an atom response while preserving whether the model produced a valid
+ * JSON array. `null` means syntax/shape failure and must stay retryable; an
+ * empty array is a legitimate zero-yield result that may be tombstoned.
+ */
+export function parseAtomsResponseResult(raw: string): AtomsParseResult | null {
   // Strip markdown code fences if the LLM wrapped JSON in them.
   let cleaned = raw.trim();
   const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -824,7 +854,7 @@ export function parseAtomsResponse(raw: string): ExtractedAtom[] {
 
   // Find the first JSON array bracket.
   const arrayStart = cleaned.indexOf('[');
-  if (arrayStart === -1) return [];
+  if (arrayStart === -1) return null;
   cleaned = cleaned.slice(arrayStart);
 
   let parsed: unknown;
@@ -833,15 +863,15 @@ export function parseAtomsResponse(raw: string): ExtractedAtom[] {
   } catch {
     // Try trimming back from the end to recover from trailing prose.
     const arrayEnd = cleaned.lastIndexOf(']');
-    if (arrayEnd === -1) return [];
+    if (arrayEnd === -1) return null;
     try {
       parsed = JSON.parse(cleaned.slice(0, arrayEnd + 1));
     } catch {
-      return [];
+      return null;
     }
   }
 
-  if (!Array.isArray(parsed)) return [];
+  if (!Array.isArray(parsed)) return null;
 
   const atoms: ExtractedAtom[] = [];
   for (const item of parsed) {
@@ -875,7 +905,12 @@ export function parseAtomsResponse(raw: string): ExtractedAtom[] {
         typeof obj.emotional_register === 'string' ? obj.emotional_register : undefined,
     });
   }
-  return atoms;
+  return { atoms, rawItemCount: parsed.length };
+}
+
+/** Backward-compatible parser surface used by existing callers and tests. */
+export function parseAtomsResponse(raw: string): ExtractedAtom[] {
+  return parseAtomsResponseResult(raw)?.atoms ?? [];
 }
 
 function todayDate(): string {

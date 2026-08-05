@@ -104,6 +104,26 @@ describe('v0.41 T5: parseAtomsResponse', () => {
 });
 
 describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
+  test('prompt requires grounded claims and preserves epistemic status and scope', async () => {
+    let capturedSystem = '';
+    const chat = async (o: ChatOpts): Promise<ChatResult> => {
+      capturedSystem = String(o.system ?? '');
+      return stubChat('[]')(o);
+    };
+
+    await runPhaseExtractAtoms(engine, {
+      _transcripts: [{ filePath: '/grounding.txt', content: 'a proposed experiment', contentHash: 'grounding-hash' }],
+      _pages: [],
+      _chat: chat as typeof import('../../src/core/ai/gateway.ts').chat,
+    });
+
+    expect(capturedSystem).toContain('Every factual claim');
+    expect(capturedSystem).toContain('Preserve epistemic status');
+    expect(capturedSystem).toContain('Preserve scope');
+    expect(capturedSystem).toContain('Do not present a draft as a message that was actually sent');
+    expect(capturedSystem).toContain('Virality is only a framing score');
+  });
+
   test('no-op when no transcripts AND no pages provided', async () => {
     // v0.41.2.1: _pages:[] suppresses page-discovery so this matches the
     // pre-v0.41.2.1 "transcript-only no-op" path. Reason changed from
