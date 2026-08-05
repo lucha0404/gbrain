@@ -13,7 +13,11 @@
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
-import { runPhaseExtractAtoms, parseAtomsResponse } from '../../src/core/cycle/extract-atoms.ts';
+import {
+  runPhaseExtractAtoms,
+  parseAtomsResponse,
+  parseAtomsResponseResult,
+} from '../../src/core/cycle/extract-atoms.ts';
 import { runPhaseSynthesizeConcepts } from '../../src/core/cycle/synthesize-concepts.ts';
 import { resetPgliteState } from '../helpers/reset-pglite.ts';
 import type { ChatResult, ChatOpts } from '../../src/core/ai/gateway.ts';
@@ -35,53 +39,74 @@ beforeEach(async () => {
 });
 
 function stubChat(text: string, opts: { input_tokens?: number; output_tokens?: number } = {}): (o: ChatOpts) => Promise<ChatResult> {
-  return async (_o: ChatOpts) => ({
-    text,
-    blocks: [{ type: 'text', text }],
-    stopReason: 'end',
-    usage: {
-      input_tokens: opts.input_tokens ?? 500,
-      output_tokens: opts.output_tokens ?? 200,
-      cache_read_tokens: 0,
-      cache_creation_tokens: 0,
-    },
-    model: 'anthropic:claude-haiku-4-5',
-    providerId: 'anthropic',
-  });
+  return async (o: ChatOpts) => {
+    const groundedText = addGroundedQuotes(text, o);
+    return {
+      text: groundedText,
+      blocks: [{ type: 'text', text: groundedText }],
+      stopReason: 'end',
+      usage: {
+        input_tokens: opts.input_tokens ?? 500,
+        output_tokens: opts.output_tokens ?? 200,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+      },
+      model: 'anthropic:claude-haiku-4-5',
+      providerId: 'anthropic',
+    };
+  };
+}
+
+function addGroundedQuotes(text: string, opts: ChatOpts): string {
+  const prompt = opts.messages.at(-1)?.content;
+  const source = typeof prompt === 'string' ? (prompt.split('\n\n---\n\n').at(-1) ?? '') : '';
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!Array.isArray(parsed)) return text;
+    return JSON.stringify(parsed.map(item =>
+      typeof item === 'object' && item !== null && !Array.isArray(item) && !('source_quote' in item)
+        ? { ...item, source_quote: [...source.trim()].slice(0, 200).join('') }
+        : item
+    ));
+  } catch {
+    return text;
+  }
 }
 
 describe('v0.41 T5: parseAtomsResponse', () => {
+  const source = 'source quote';
+
   test('parses well-formed JSON array', () => {
-    const raw = `[{"title":"Test","atom_type":"insight","body":"body text"}]`;
-    const atoms = parseAtomsResponse(raw);
+    const raw = `[{"title":"Test","atom_type":"insight","body":"body text","source_quote":"source quote"}]`;
+    const atoms = parseAtomsResponse(raw, source);
     expect(atoms.length).toBe(1);
     expect(atoms[0].title).toBe('Test');
     expect(atoms[0].atom_type).toBe('insight');
   });
 
   test('strips markdown code fences', () => {
-    const raw = '```json\n[{"title":"T","atom_type":"quote","body":"b"}]\n```';
-    expect(parseAtomsResponse(raw).length).toBe(1);
+    const raw = '```json\n[{"title":"T","atom_type":"quote","body":"b","source_quote":"source quote"}]\n```';
+    expect(parseAtomsResponse(raw, source).length).toBe(1);
   });
 
   test('tolerates trailing prose after JSON', () => {
-    const raw = `[{"title":"T","atom_type":"framework","body":"b"}]\n\nThanks!`;
-    expect(parseAtomsResponse(raw).length).toBe(1);
+    const raw = `[{"title":"T","atom_type":"framework","body":"b","source_quote":"source quote"}]\n\nThanks!`;
+    expect(parseAtomsResponse(raw, source).length).toBe(1);
   });
 
   test('rejects atoms with invalid atom_type', () => {
-    const raw = `[{"title":"T","atom_type":"made_up_type","body":"b"}]`;
-    expect(parseAtomsResponse(raw).length).toBe(0);
+    const raw = `[{"title":"T","atom_type":"made_up_type","body":"b","source_quote":"source quote"}]`;
+    expect(parseAtomsResponse(raw, source).length).toBe(0);
   });
 
   test('rejects atoms missing required fields', () => {
-    const raw = `[{"title":"T","atom_type":"insight"}]`; // no body
-    expect(parseAtomsResponse(raw).length).toBe(0);
+    const raw = `[{"title":"T","atom_type":"insight","source_quote":"source quote"}]`; // no body
+    expect(parseAtomsResponse(raw, source).length).toBe(0);
   });
 
   test('returns [] on garbage input', () => {
-    expect(parseAtomsResponse('not json')).toEqual([]);
-    expect(parseAtomsResponse('')).toEqual([]);
+    expect(parseAtomsResponse('not json', source)).toEqual([]);
+    expect(parseAtomsResponse('', source)).toEqual([]);
   });
 
   test('accepts all 11 declared atom_type values', () => {
@@ -89,17 +114,72 @@ describe('v0.41 T5: parseAtomsResponse', () => {
                    'story_angle', 'strategy_angle', 'strategy', 'endorsement',
                    'critique', 'collection'];
     for (const t of types) {
-      const raw = `[{"title":"x","atom_type":"${t}","body":"b"}]`;
-      const atoms = parseAtomsResponse(raw);
+      const raw = `[{"title":"x","atom_type":"${t}","body":"b","source_quote":"source quote"}]`;
+      const atoms = parseAtomsResponse(raw, source);
       expect(atoms.length).toBe(1);
       expect(atoms[0].atom_type as string).toBe(t);
     }
   });
 
-  test('clamps virality_score to [0, 100]', () => {
-    expect(parseAtomsResponse(`[{"title":"a","atom_type":"insight","body":"b","virality_score":150}]`)[0].virality_score).toBeUndefined();
-    expect(parseAtomsResponse(`[{"title":"a","atom_type":"insight","body":"b","virality_score":-5}]`)[0].virality_score).toBeUndefined();
-    expect(parseAtomsResponse(`[{"title":"a","atom_type":"insight","body":"b","virality_score":75}]`)[0].virality_score).toBe(75);
+  test('strictly validates virality_score in [0, 100]', () => {
+    expect(parseAtomsResponse(`[{"title":"a","atom_type":"insight","body":"b","source_quote":"source quote","virality_score":150}]`, source)).toEqual([]);
+    expect(parseAtomsResponse(`[{"title":"a","atom_type":"insight","body":"b","source_quote":"source quote","virality_score":-5}]`, source)).toEqual([]);
+    expect(parseAtomsResponse(`[{"title":"a","atom_type":"insight","body":"b","source_quote":"source quote","virality_score":75}]`, source)[0].virality_score).toBe(75);
+  });
+});
+
+describe('extract_atoms strict grounding boundary', () => {
+  const source = '第一段包含合法事实。\n\n第二段\t保留 Unicode 空白。';
+  const validAtom = {
+    title: '合法事实',
+    atom_type: 'insight',
+    body: '来源明确写出了这条事实。',
+    source_quote: '第一段包含合法事实。',
+  };
+
+  test('rejects a missing source_quote', () => {
+    const { source_quote: _omitted, ...missingQuote } = validAtom;
+    expect(parseAtomsResponseResult(JSON.stringify([missingQuote]), source)).toBeNull();
+  });
+
+  test('rejects a source_quote that is not grounded in the source', () => {
+    expect(parseAtomsResponseResult(JSON.stringify([{
+      ...validAtom,
+      source_quote: '来源里从未出现过的结果。',
+    }]), source)).toBeNull();
+  });
+
+  test('rejects a source_quote longer than 200 Unicode code points', () => {
+    const longQuote = '真'.repeat(201);
+    expect(parseAtomsResponseResult(JSON.stringify([{
+      ...validAtom,
+      source_quote: longQuote,
+    }]), longQuote)).toBeNull();
+  });
+
+  test('rejects more than three atoms', () => {
+    expect(parseAtomsResponseResult(JSON.stringify([
+      validAtom,
+      validAtom,
+      validAtom,
+      validAtom,
+    ]), source)).toBeNull();
+  });
+
+  test('rejects the entire batch when one atom is invalid', () => {
+    expect(parseAtomsResponseResult(JSON.stringify([
+      validAtom,
+      { ...validAtom, source_quote: '伪造引用' },
+    ]), source)).toBeNull();
+  });
+
+  test('accepts grounded Unicode quotes after whitespace normalization', () => {
+    const parsed = parseAtomsResponseResult(JSON.stringify([{
+      ...validAtom,
+      source_quote: '第二段 保留 Unicode 空白。',
+    }]), source);
+    expect(parsed?.atoms).toHaveLength(1);
+    expect(parsed?.atoms[0].source_quote).toBe('第二段 保留 Unicode 空白。');
   });
 });
 
@@ -176,7 +256,7 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
       callCount++;
       if (callCount === 1) throw new Error('rate limit');
       return {
-        text: `[{"title":"t","atom_type":"insight","body":"b"}]`,
+        text: `[{"title":"t","atom_type":"insight","body":"b","source_quote":"b"}]`,
         blocks: [],
         stopReason: 'end' as const,
         usage: { input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_creation_tokens: 0 },
@@ -399,25 +479,27 @@ describe('v0.41 T6: runPhaseSynthesizeConcepts via stubbed chat', () => {
 // — so the last test here goes extractor → REAL frontmatter → real DB
 // query path → concept page.
 describe('#2123: concepts label parsing', () => {
+  const source = 'source quote';
+
   test('keeps valid kebab-case labels', () => {
-    const raw = `[{"title":"T","atom_type":"insight","body":"b","concepts":["captive-portal","tls-certificates"]}]`;
-    expect(parseAtomsResponse(raw)[0].concepts).toEqual(['captive-portal', 'tls-certificates']);
+    const raw = `[{"title":"T","atom_type":"insight","body":"b","source_quote":"source quote","concepts":["captive-portal","tls-certificates"]}]`;
+    expect(parseAtomsResponse(raw, source)[0].concepts).toEqual(['captive-portal', 'tls-certificates']);
   });
 
-  test('filters non-kebab labels, keeps the rest', () => {
-    const raw = `[{"title":"T","atom_type":"insight","body":"b","concepts":["Captive Portal","tp_link","UPPER","valid-label"]}]`;
-    expect(parseAtomsResponse(raw)[0].concepts).toEqual(['valid-label']);
+  test('rejects the atom when any concept label is invalid', () => {
+    const raw = `[{"title":"T","atom_type":"insight","body":"b","source_quote":"source quote","concepts":["Captive Portal","valid-label"]}]`;
+    expect(parseAtomsResponse(raw, source)).toEqual([]);
   });
 
-  test('truncates to 3 labels', () => {
-    const raw = `[{"title":"T","atom_type":"insight","body":"b","concepts":["a","b","c","d","e"]}]`;
-    expect(parseAtomsResponse(raw)[0].concepts).toEqual(['a', 'b', 'c']);
+  test('rejects more than 3 labels', () => {
+    const raw = `[{"title":"T","atom_type":"insight","body":"b","source_quote":"source quote","concepts":["a","b","c","d"]}]`;
+    expect(parseAtomsResponse(raw, source)).toEqual([]);
   });
 
-  test('absent / non-array / all-invalid → undefined', () => {
-    expect(parseAtomsResponse(`[{"title":"T","atom_type":"insight","body":"b"}]`)[0].concepts).toBeUndefined();
-    expect(parseAtomsResponse(`[{"title":"T","atom_type":"insight","body":"b","concepts":"not-an-array"}]`)[0].concepts).toBeUndefined();
-    expect(parseAtomsResponse(`[{"title":"T","atom_type":"insight","body":"b","concepts":["Bad Label!"]}]`)[0].concepts).toBeUndefined();
+  test('absent concepts stay optional; malformed concepts reject the atom', () => {
+    expect(parseAtomsResponse(`[{"title":"T","atom_type":"insight","body":"b","source_quote":"source quote"}]`, source)[0].concepts).toBeUndefined();
+    expect(parseAtomsResponse(`[{"title":"T","atom_type":"insight","body":"b","source_quote":"source quote","concepts":"not-an-array"}]`, source)).toEqual([]);
+    expect(parseAtomsResponse(`[{"title":"T","atom_type":"insight","body":"b","source_quote":"source quote","concepts":["Bad Label!"]}]`, source)).toEqual([]);
   });
 });
 

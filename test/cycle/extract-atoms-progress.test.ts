@@ -48,14 +48,23 @@ function makeMockReporter(): {
 }
 
 function stubChat(text: string): (o: ChatOpts) => Promise<ChatResult> {
-  return async (_o: ChatOpts) => ({
-    text,
-    blocks: [{ type: 'text', text }],
-    stopReason: 'end',
-    usage: { input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_creation_tokens: 0 },
-    model: 'anthropic:claude-haiku-4-5',
-    providerId: 'anthropic',
-  });
+  return async (o: ChatOpts) => {
+    const prompt = o.messages.at(-1)?.content;
+    const source = typeof prompt === 'string' ? (prompt.split('\n\n---\n\n').at(-1) ?? '') : '';
+    const atoms = JSON.parse(text) as Array<Record<string, unknown>>;
+    const groundedText = JSON.stringify(atoms.map(atom => ({
+      ...atom,
+      source_quote: [...source.trim()].slice(0, 200).join(''),
+    })));
+    return {
+      text: groundedText,
+      blocks: [{ type: 'text', text: groundedText }],
+      stopReason: 'end',
+      usage: { input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_creation_tokens: 0 },
+      model: 'anthropic:claude-haiku-4-5',
+      providerId: 'anthropic',
+    };
+  };
 }
 
 describe('extract_atoms progress wiring (T4)', () => {

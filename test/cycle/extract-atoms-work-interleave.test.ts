@@ -186,7 +186,7 @@ describe('extract_atoms work-list interleave (budget-starvation regression)', ()
     expect(await countExtractAtomsBacklog(engine, 'default')).toBe(1);
 
     const validAtomJson = JSON.stringify([
-      { title: 'A', atom_type: 'insight', body: 'body a' },
+      { title: 'A', atom_type: 'insight', body: 'body a', source_quote: 'x' },
     ]);
     await runPhaseExtractAtoms(engine, {
       sourceId: 'default',

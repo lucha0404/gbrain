@@ -38,14 +38,33 @@ beforeEach(async () => {
 });
 
 function stubChat(text: string): (o: ChatOpts) => Promise<ChatResult> {
-  return async (_o: ChatOpts) => ({
-    text,
-    blocks: [{ type: 'text', text }],
-    stopReason: 'end',
-    usage: { input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_creation_tokens: 0 },
-    model: 'anthropic:claude-haiku-4-5',
-    providerId: 'anthropic',
-  });
+  return async (o: ChatOpts) => {
+    const groundedText = addGroundedQuotes(text, o);
+    return {
+      text: groundedText,
+      blocks: [{ type: 'text', text: groundedText }],
+      stopReason: 'end',
+      usage: { input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_creation_tokens: 0 },
+      model: 'anthropic:claude-haiku-4-5',
+      providerId: 'anthropic',
+    };
+  };
+}
+
+function addGroundedQuotes(text: string, opts: ChatOpts): string {
+  const prompt = opts.messages.at(-1)?.content;
+  const source = typeof prompt === 'string' ? (prompt.split('\n\n---\n\n').at(-1) ?? '') : '';
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!Array.isArray(parsed)) return text;
+    return JSON.stringify(parsed.map(item =>
+      typeof item === 'object' && item !== null && !Array.isArray(item) && !('source_quote' in item)
+        ? { ...item, source_quote: [...source.trim()].slice(0, 200).join('') }
+        : item
+    ));
+  } catch {
+    return text;
+  }
 }
 
 /**
@@ -55,9 +74,12 @@ function stubChat(text: string): (o: ChatOpts) => Promise<ChatResult> {
  */
 function stubChatUnique(): (o: ChatOpts) => Promise<ChatResult> {
   let counter = 0;
-  return async (_o: ChatOpts) => {
+  return async (o: ChatOpts) => {
     counter++;
-    const text = `[{"title":"unique-atom-${counter}","atom_type":"insight","body":"b${counter}"}]`;
+    const text = addGroundedQuotes(
+      `[{"title":"unique-atom-${counter}","atom_type":"insight","body":"b${counter}"}]`,
+      o,
+    );
     return {
       text,
       blocks: [{ type: 'text', text }],
@@ -511,5 +533,25 @@ describe('#2144: zero-yield tombstone', () => {
     expect(rows[0].scan).toBeNull();
     const discovered = await discoverExtractablePages(engine, 'default');
     expect(discovered.map((d) => d.slug)).toContain('article/invalid-schema');
+  });
+
+  test('partially invalid atom batch writes nothing and stays retryable', async () => {
+    await seedPage({ slug: 'article/partially-invalid', type: 'article' });
+    const response = JSON.stringify([
+      { title: 'grounded', atom_type: 'insight', body: 'grounded body', source_quote: 'aaaa' },
+      { title: 'fabricated', atom_type: 'insight', body: 'fabricated body', source_quote: 'not in source' },
+    ]);
+    const result = await runPhaseExtractAtoms(engine, {
+      _transcripts: [],
+      _chat: stubChat(response),
+    });
+
+    expect(result.details?.atoms_extracted).toBe(0);
+    const atoms = await engine.executeRaw<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM pages WHERE type = 'atom'`,
+    );
+    expect(atoms[0].count).toBe(0);
+    const discovered = await discoverExtractablePages(engine, 'default');
+    expect(discovered.map((page) => page.slug)).toContain('article/partially-invalid');
   });
 });

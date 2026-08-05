@@ -186,6 +186,14 @@ interface ExtractedAtom {
 
 /** kebab-case validator for concept labels ("captive-portal", "channel-pricing"). */
 const CONCEPT_LABEL_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+const EMOTIONAL_REGISTERS = new Set([
+  'shocking',
+  'inspiring',
+  'funny',
+  'sobering',
+  'practical',
+  'controversial',
+]);
 
 const EXTRACT_PROMPT = `You extract grounded atomic content nuggets from a source.
 
@@ -644,13 +652,14 @@ export async function runPhaseExtractAtoms(
 
     const originLabel = item.kind === 'transcript' ? item.filePath : item.slug;
     try {
+      const sourceExcerpt = item.content.slice(0, 50_000);
       const result = await chat({
         model: extractModel,
         system: EXTRACT_PROMPT,
         messages: [
           {
             role: 'user',
-            content: `Source: ${originLabel}\n\n---\n\n${item.content.slice(0, 50_000)}`,
+            content: `Source: ${originLabel}\n\n---\n\n${sourceExcerpt}`,
           },
         ],
         maxTokens: 4096,
@@ -662,7 +671,7 @@ export async function runPhaseExtractAtoms(
 
       estimatedSpendUsd = budgetTracker.totalSpent;
 
-      const parsedAtoms = parseAtomsResponseResult(result.text);
+      const parsedAtoms = parseAtomsResponseResult(result.text, sourceExcerpt);
       if (parsedAtoms === null || (parsedAtoms.rawItemCount > 0 && parsedAtoms.atoms.length === 0)) {
         console.error(`[extract_atoms] invalid atom JSON/schema for ${originLabel}; leaving source retryable`);
         continue;
@@ -832,9 +841,10 @@ export async function runPhaseExtractAtoms(
 }
 
 /**
- * Parse the Haiku JSON response into ExtractedAtom[]. Tolerant of
- * common LLM mistakes: extra prose around the JSON, missing fields,
- * invalid atom_type values. Rejects (returns empty) on hard parse fail.
+ * Parse the model JSON response into ExtractedAtom[]. Markdown fences and
+ * trailing prose are tolerated, but the atom schema and source grounding are
+ * strict. Any invalid item rejects the entire batch so the source is retried
+ * instead of partially persisting an untrustworthy result.
  */
 export interface AtomsParseResult {
   atoms: ExtractedAtom[];
@@ -846,7 +856,7 @@ export interface AtomsParseResult {
  * JSON array. `null` means syntax/shape failure and must stay retryable; an
  * empty array is a legitimate zero-yield result that may be tombstoned.
  */
-export function parseAtomsResponseResult(raw: string): AtomsParseResult | null {
+export function parseAtomsResponseResult(raw: string, sourceText: string): AtomsParseResult | null {
   // Strip markdown code fences if the LLM wrapped JSON in them.
   let cleaned = raw.trim();
   const fenceMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -871,46 +881,94 @@ export function parseAtomsResponseResult(raw: string): AtomsParseResult | null {
     }
   }
 
-  if (!Array.isArray(parsed)) return null;
+  if (!Array.isArray(parsed) || parsed.length > 3) return null;
 
   const atoms: ExtractedAtom[] = [];
   for (const item of parsed) {
-    if (typeof item !== 'object' || item === null) continue;
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
     const obj = item as Record<string, unknown>;
-    const title = typeof obj.title === 'string' ? obj.title.slice(0, 200) : null;
-    const atomType = typeof obj.atom_type === 'string' ? obj.atom_type.trim().toLowerCase() : null;
-    const body = typeof obj.body === 'string' ? obj.body : null;
-    if (!title || !atomType || !body) continue;
-    if (!ATOM_TYPES.includes(atomType as typeof ATOM_TYPES[number])) continue;
+    const title = strictString(obj.title, 80);
+    const atomType = typeof obj.atom_type === 'string' ? obj.atom_type : null;
+    const body = strictString(obj.body);
+    const sourceQuote = strictString(obj.source_quote, 200);
+    if (!title || !atomType || !body || !sourceQuote) return null;
+    if (!ATOM_TYPES.includes(atomType as typeof ATOM_TYPES[number])) return null;
+    if (!normalizedGroundingText(sourceText).includes(normalizedGroundingText(sourceQuote))) {
+      return null;
+    }
+
+    let lesson: string | undefined;
+    if (obj.lesson !== undefined) {
+      lesson = strictString(obj.lesson) ?? undefined;
+      if (!lesson) return null;
+    }
+
+    let concepts: string[] | undefined;
+    if (obj.concepts !== undefined) {
+      if (!Array.isArray(obj.concepts) || obj.concepts.length < 1 || obj.concepts.length > 3) {
+        return null;
+      }
+      if (!obj.concepts.every((concept): concept is string =>
+        typeof concept === 'string' && CONCEPT_LABEL_RE.test(concept)
+      )) {
+        return null;
+      }
+      concepts = obj.concepts;
+    }
+
+    let viralityScore: number | undefined;
+    if (obj.virality_score !== undefined) {
+      if (
+        typeof obj.virality_score !== 'number' ||
+        !Number.isFinite(obj.virality_score) ||
+        obj.virality_score < 0 ||
+        obj.virality_score > 100
+      ) {
+        return null;
+      }
+      viralityScore = obj.virality_score;
+    }
+
+    let emotionalRegister: string | undefined;
+    if (obj.emotional_register !== undefined) {
+      if (
+        typeof obj.emotional_register !== 'string' ||
+        !EMOTIONAL_REGISTERS.has(obj.emotional_register)
+      ) {
+        return null;
+      }
+      emotionalRegister = obj.emotional_register;
+    }
+
     atoms.push({
       title,
       atom_type: atomType as typeof ATOM_TYPES[number],
       body,
-      source_quote: typeof obj.source_quote === 'string' ? obj.source_quote.slice(0, 500) : undefined,
-      lesson: typeof obj.lesson === 'string' ? obj.lesson : undefined,
-      concepts: (() => {
-        if (!Array.isArray(obj.concepts)) return undefined;
-        const labels = obj.concepts
-          .filter((c): c is string => typeof c === 'string' && CONCEPT_LABEL_RE.test(c))
-          .slice(0, 3);
-        return labels.length > 0 ? labels : undefined;
-      })(),
-      virality_score:
-        typeof obj.virality_score === 'number' &&
-        obj.virality_score >= 0 &&
-        obj.virality_score <= 100
-          ? obj.virality_score
-          : undefined,
-      emotional_register:
-        typeof obj.emotional_register === 'string' ? obj.emotional_register : undefined,
+      source_quote: sourceQuote,
+      lesson,
+      concepts,
+      virality_score: viralityScore,
+      emotional_register: emotionalRegister,
     });
   }
   return { atoms, rawItemCount: parsed.length };
 }
 
-/** Backward-compatible parser surface used by existing callers and tests. */
-export function parseAtomsResponse(raw: string): ExtractedAtom[] {
-  return parseAtomsResponseResult(raw)?.atoms ?? [];
+function strictString(value: unknown, maxCodePoints?: number): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  if (maxCodePoints !== undefined && [...trimmed].length > maxCodePoints) return null;
+  return trimmed;
+}
+
+function normalizedGroundingText(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/gu, ' ').trim();
+}
+
+/** Convenience parser surface used by tests and non-cycle callers. */
+export function parseAtomsResponse(raw: string, sourceText: string): ExtractedAtom[] {
+  return parseAtomsResponseResult(raw, sourceText)?.atoms ?? [];
 }
 
 function todayDate(): string {

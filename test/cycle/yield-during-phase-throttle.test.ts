@@ -45,14 +45,18 @@ beforeEach(async () => {
 });
 
 function stubChat(): (o: ChatOpts) => Promise<ChatResult> {
-  return async (_o: ChatOpts) => ({
-    text: JSON.stringify([{ title: 'T', atom_type: 'insight', body: 'b' }]),
-    blocks: [{ type: 'text', text: '' }],
-    stopReason: 'end',
-    usage: { input_tokens: 10, output_tokens: 10, cache_read_tokens: 0, cache_creation_tokens: 0 },
-    model: 'anthropic:claude-haiku-4-5',
-    providerId: 'anthropic',
-  });
+  return async (o: ChatOpts) => {
+    const prompt = o.messages.at(-1)?.content;
+    const source = typeof prompt === 'string' ? (prompt.split('\n\n---\n\n').at(-1) ?? '') : '';
+    return {
+      text: JSON.stringify([{ title: 'T', atom_type: 'insight', body: 'b', source_quote: source.trim() }]),
+      blocks: [{ type: 'text', text: '' }],
+      stopReason: 'end',
+      usage: { input_tokens: 10, output_tokens: 10, cache_read_tokens: 0, cache_creation_tokens: 0 },
+      model: 'anthropic:claude-haiku-4-5',
+      providerId: 'anthropic',
+    };
+  };
 }
 
 describe('extract_atoms yieldDuringPhase throttle (T3)', () => {
