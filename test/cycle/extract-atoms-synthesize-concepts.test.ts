@@ -292,6 +292,8 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
     expect(calls).toHaveLength(2);
     expect(calls.every(call => call.responseFormat === 'json')).toBe(true);
     expect(calls[1].messages.at(-1)?.content).toContain('invalid_grounding');
+    expect(calls[1].messages.at(-1)?.content).toContain(source);
+    expect(calls[1].messages.at(-1)?.content).toContain('with no edits, translation, paraphrase');
     expect(result.details?.atoms_extracted).toBe(1);
     expect(result.details?.failures).toEqual([]);
   });

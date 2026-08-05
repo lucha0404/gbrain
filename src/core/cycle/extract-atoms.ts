@@ -693,7 +693,7 @@ export async function runPhaseExtractAtoms(
             { role: 'assistant', content: result.text },
             {
               role: 'user',
-              content: atomRepairFeedback(firstFailure),
+              content: atomRepairFeedback(firstFailure, sourceExcerpt),
             },
           ],
           maxTokens: 4096,
@@ -922,14 +922,63 @@ function formatAtomFailure(failure: AtomResponseFailure): string {
     : `${failure.code},item=${failure.itemIndex}`;
 }
 
-function atomRepairFeedback(failure: AtomResponseFailure): string {
+function exactSourceQuoteCandidates(sourceText: string, limit = 24): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const add = (raw: string): void => {
+    const variants = [
+      raw.trim(),
+      raw.trim().replace(/^(?:[-*+]\s+|#{1,6}\s+)/u, ''),
+    ];
+    for (const value of variants) {
+      if (
+        !value ||
+        [...value].length > 200 ||
+        countLetterNumberCodePoints(value) < MIN_SOURCE_QUOTE_SIGNAL_CODE_POINTS ||
+        seen.has(value)
+      ) continue;
+      seen.add(value);
+      candidates.push(value);
+    }
+  };
+
+  for (const line of sourceText.split(/\r?\n+/u)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const sentences = trimmed.match(/[^.!?。！？]+[.!?。！？]?/gu) ?? [trimmed];
+    for (const sentence of sentences) {
+      const value = sentence.trim();
+      if ([...value].length <= 200) {
+        add(value);
+        continue;
+      }
+      const codePoints = [...value];
+      for (let offset = 0; offset < codePoints.length; offset += 180) {
+        add(codePoints.slice(offset, offset + 180).join(''));
+      }
+    }
+  }
+
+  if (candidates.length <= limit) return candidates;
+  const sampled: string[] = [];
+  for (let index = 0; index < limit; index++) {
+    const sourceIndex = Math.round(index * (candidates.length - 1) / (limit - 1));
+    const candidate = candidates[sourceIndex]!;
+    if (sampled.at(-1) !== candidate) sampled.push(candidate);
+  }
+  return sampled;
+}
+
+function atomRepairFeedback(failure: AtomResponseFailure, sourceText: string): string {
+  const allowedQuotes = exactSourceQuoteCandidates(sourceText);
   const focus = failure.code === 'invalid_grounding'
-    ? 'Every source_quote must be an exact verbatim substring of the supplied source and contain at least 8 letters or numbers.'
+    ? 'Every source_quote must be copied character-for-character from one exact_source_quote_candidate below, with no edits, translation, paraphrase, prefix, or suffix.'
     : failure.code === 'too_many_atoms'
       ? 'Return no more than 3 atoms.'
       : 'Follow the requested JSON object shape and atom field constraints exactly.';
   return `Validation feedback: ${formatAtomFailure(failure)}. ${focus} ` +
-    'Repair the response and return only one JSON object shaped as {"atoms":[...]}. Do not add facts.';
+    `exact_source_quote_candidates=${JSON.stringify(allowedQuotes)}. ` +
+    'If none supports an atom, return {"atoms":[]}. Repair the response and return only one JSON object shaped as {"atoms":[...]}. Do not add facts.';
 }
 
 function parseJsonResponse(raw: string): { ok: true; value: unknown } | { ok: false } {
