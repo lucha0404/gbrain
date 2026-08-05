@@ -113,9 +113,9 @@ describe('extract_atoms progress wiring (T4)', () => {
     await runPhaseExtractAtoms(engine, {
       sourceId: 'default',
       _transcripts: [
-        { filePath: '/tmp/t1.txt', content: 'a', contentHash: 'h1'.repeat(8) },
-        { filePath: '/tmp/t2.txt', content: 'b', contentHash: 'h2'.repeat(8) },
-        { filePath: '/tmp/t3.txt', content: 'c', contentHash: 'h3'.repeat(8) },
+        { filePath: '/tmp/t1.txt', content: 'source alpha', contentHash: 'h1'.repeat(8) },
+        { filePath: '/tmp/t2.txt', content: 'source bravo', contentHash: 'h2'.repeat(8) },
+        { filePath: '/tmp/t3.txt', content: 'source charlie', contentHash: 'h3'.repeat(8) },
       ],
       _pages: [],
       _chat: stubChat(validAtomJson),

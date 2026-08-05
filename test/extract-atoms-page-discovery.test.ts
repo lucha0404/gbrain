@@ -129,6 +129,21 @@ async function seedPage(opts: {
   }
 }
 
+async function readAtomsRollup(): Promise<{ completed: number; halts: number }> {
+  const rows = await engine.executeRaw<{
+    round_completed_count: number | string;
+    halt_count: number | string;
+  }>(
+    `SELECT round_completed_count, halt_count
+       FROM extract_rollup_7d
+      WHERE kind = 'atoms' AND source_id = 'default'`,
+  );
+  return {
+    completed: Number(rows[0]?.round_completed_count ?? -1),
+    halts: Number(rows[0]?.halt_count ?? -1),
+  };
+}
+
 describe('v0.41.2.1: discoverExtractablePages SQL contract', () => {
   test('discovers legacy + pack-extractable types, excludes synthesis outputs', async () => {
     // Legacy floor + `note` (declared extractable:true in gbrain-base, now
@@ -293,8 +308,8 @@ describe('v0.41.2.1: runPhaseExtractAtoms — dual-source merge + idempotency', 
     // a constant title would upsert into one slug and mask one origin.
     const chat = stubChatUnique();
     await runPhaseExtractAtoms(engine, {
-      _transcripts: [{ filePath: '/T.txt', content: 'tc', contentHash: 'tchash1234567890ab' }],
-      _pages: [{ slug: 'meeting/P', content: 'pc', contentHash: 'pchash1234567890ab' }],
+      _transcripts: [{ filePath: '/T.txt', content: 'transcript content', contentHash: 'tchash1234567890ab' }],
+      _pages: [{ slug: 'meeting/P', content: 'page content', contentHash: 'pchash1234567890ab' }],
       _chat: chat,
     });
     const rows = await engine.executeRaw<{ slug: string; frontmatter: Record<string, unknown> }>(
@@ -318,7 +333,7 @@ describe('v0.41.2.1: runPhaseExtractAtoms — dual-source merge + idempotency', 
     const chat = stubChat(`[{"title":"x","atom_type":"insight","body":"b"}]`);
     await runPhaseExtractAtoms(engine, {
       sourceId: 'dept-x',
-      _transcripts: [{ filePath: '/T.txt', content: 'tc', contentHash: 'tchash1234567890ab' }],
+      _transcripts: [{ filePath: '/T.txt', content: 'transcript content', contentHash: 'tchash1234567890ab' }],
       _pages: [],
       _chat: chat,
     });
@@ -333,13 +348,13 @@ describe('v0.41.2.1: runPhaseExtractAtoms — dual-source merge + idempotency', 
     const chat = stubChatUnique();
     // First run writes the atom
     await runPhaseExtractAtoms(engine, {
-      _transcripts: [{ filePath: '/T.txt', content: 'c', contentHash: 'dedup1234567890abcd' }],
+      _transcripts: [{ filePath: '/T.txt', content: 'transcript content', contentHash: 'dedup1234567890abcd' }],
       _pages: [],
       _chat: chat,
     });
     // Second run on same content_hash should skip (no second atom written)
     const result2 = await runPhaseExtractAtoms(engine, {
-      _transcripts: [{ filePath: '/T.txt', content: 'c', contentHash: 'dedup1234567890abcd' }],
+      _transcripts: [{ filePath: '/T.txt', content: 'transcript content', contentHash: 'dedup1234567890abcd' }],
       _pages: [],
       _chat: chat,
     });
@@ -355,7 +370,7 @@ describe('v0.41.2.1: runPhaseExtractAtoms — dual-source merge + idempotency', 
     const chat = stubChatUnique();
     await seedPage({ slug: 'meeting/M', type: 'meeting', content_hash: 'mhash1234567890ab' });
     await runPhaseExtractAtoms(engine, {
-      _transcripts: [{ filePath: '/T.txt', content: 'tc', contentHash: 'thash1234567890ab' }],
+      _transcripts: [{ filePath: '/T.txt', content: 'transcript content', contentHash: 'thash1234567890ab' }],
       _chat: chat,
     });
     const before = await engine.executeRaw<{ count: number }>(
@@ -365,7 +380,7 @@ describe('v0.41.2.1: runPhaseExtractAtoms — dual-source merge + idempotency', 
 
     // Second invocation — no work expected; both dedup paths fire
     const result2 = await runPhaseExtractAtoms(engine, {
-      _transcripts: [{ filePath: '/T.txt', content: 'tc', contentHash: 'thash1234567890ab' }],
+      _transcripts: [{ filePath: '/T.txt', content: 'transcript content', contentHash: 'thash1234567890ab' }],
       _chat: chat,
     });
     expect(result2.details?.atoms_extracted).toBe(0);
@@ -386,7 +401,7 @@ describe('v0.41.2.1: runPhaseExtractAtoms — dual-source merge + idempotency', 
     // source-dated slug is observably distinct from the old run-date one.
     const filePath = '/srv/transcripts/2026-06-12-telegram.md';
     await runPhaseExtractAtoms(engine, {
-      _transcripts: [{ filePath, content: 'first', contentHash: 'aaaa1111bbbb2222' }],
+      _transcripts: [{ filePath, content: 'first source version', contentHash: 'aaaa1111bbbb2222' }],
       _pages: [],
       _chat: chat,
     });
@@ -395,7 +410,7 @@ describe('v0.41.2.1: runPhaseExtractAtoms — dual-source merge + idempotency', 
     // this minted a second atom under a new run-date prefix (Bug B); the
     // source-dated, title-hashed slug must upsert into the same row instead.
     await runPhaseExtractAtoms(engine, {
-      _transcripts: [{ filePath, content: 'first plus appended', contentHash: 'cccc3333dddd4444' }],
+      _transcripts: [{ filePath, content: 'first source version plus appended', contentHash: 'cccc3333dddd4444' }],
       _pages: [],
       _chat: chat,
     });
@@ -417,8 +432,8 @@ describe('v0.41.2.1: runPhaseExtractAtoms — dual-source merge + idempotency', 
     const result = await runPhaseExtractAtoms(engine, {
       _transcripts: [],
       _pages: [
-        { slug: 'meeting/a', content: 'a', contentHash: 'a1234567890abcde' },
-        { slug: 'meeting/b', content: 'b', contentHash: 'b1234567890abcde' },
+        { slug: 'meeting/a', content: 'page content a', contentHash: 'a1234567890abcde' },
+        { slug: 'meeting/b', content: 'page content b', contentHash: 'b1234567890abcde' },
       ],
       _chat: chat,
     });
@@ -432,8 +447,8 @@ describe('v0.41.2.1: runPhaseExtractAtoms — dual-source merge + idempotency', 
   test('dry-run skips putPage for atoms', async () => {
     const chat = stubChat(`[{"title":"x","atom_type":"insight","body":"b"}]`);
     const result = await runPhaseExtractAtoms(engine, {
-      _transcripts: [{ filePath: '/T.txt', content: 'tc', contentHash: 'th1234567890abcde' }],
-      _pages: [{ slug: 'meeting/M', content: 'mc', contentHash: 'mh1234567890abcde' }],
+      _transcripts: [{ filePath: '/T.txt', content: 'transcript content', contentHash: 'th1234567890abcde' }],
+      _pages: [{ slug: 'meeting/M', content: 'meeting content', contentHash: 'mh1234567890abcde' }],
       _chat: chat,
       dryRun: true,
     });
@@ -472,8 +487,11 @@ describe('#2144: zero-yield tombstone', () => {
     await seedPage({ slug: 'article/zero-yield', type: 'article' });
     // Successful LLM call that yields no atoms.
     const result = await runPhaseExtractAtoms(engine, { _transcripts: [], _chat: stubChat('[]') });
+    expect(result.status).toBe('ok');
+    expect(result.details.failures).toEqual([]);
     expect(result.details?.pages_processed).toBe(1);
     expect(result.details?.atoms_extracted).toBe(0);
+    expect(await readAtomsRollup()).toEqual({ completed: 1, halts: 0 });
 
     // Stamp landed: atoms_scan_hash = first 16 chars of the page's content_hash.
     const rows = await engine.executeRaw<{ scan: string; ch: string }>(
@@ -515,18 +533,28 @@ describe('#2144: zero-yield tombstone', () => {
 
   test('invalid JSON does NOT stamp — page stays retryable', async () => {
     await seedPage({ slug: 'article/invalid-json', type: 'article' });
-    await runPhaseExtractAtoms(engine, { _transcripts: [], _chat: stubChat('not json') });
+    const result = await runPhaseExtractAtoms(engine, { _transcripts: [], _chat: stubChat('not json') });
+    expect(result.status).toBe('warn');
+    expect(result.details.failures).toEqual([{
+      source: 'article/invalid-json',
+      error: 'invalid atom response: JSON, schema, or source grounding validation failed',
+    }]);
+    expect(result.details.pages_processed).toBe(0);
     const rows = await engine.executeRaw<{ scan: string | null }>(
       `SELECT frontmatter->>'atoms_scan_hash' AS scan FROM pages WHERE slug = 'article/invalid-json'`,
     );
     expect(rows[0].scan).toBeNull();
     const discovered = await discoverExtractablePages(engine, 'default');
     expect(discovered.map((d) => d.slug)).toContain('article/invalid-json');
+    expect(await readAtomsRollup()).toEqual({ completed: 0, halts: 1 });
   });
 
   test('non-empty invalid atom array does NOT stamp — page stays retryable', async () => {
     await seedPage({ slug: 'article/invalid-schema', type: 'article' });
-    await runPhaseExtractAtoms(engine, { _transcripts: [], _chat: stubChat('[{"title":"missing fields"}]') });
+    const result = await runPhaseExtractAtoms(engine, { _transcripts: [], _chat: stubChat('[{"title":"missing fields"}]') });
+    expect(result.status).toBe('warn');
+    expect((result.details.failures as unknown[]).length).toBe(1);
+    expect(result.details.pages_processed).toBe(0);
     const rows = await engine.executeRaw<{ scan: string | null }>(
       `SELECT frontmatter->>'atoms_scan_hash' AS scan FROM pages WHERE slug = 'article/invalid-schema'`,
     );
@@ -538,7 +566,7 @@ describe('#2144: zero-yield tombstone', () => {
   test('partially invalid atom batch writes nothing and stays retryable', async () => {
     await seedPage({ slug: 'article/partially-invalid', type: 'article' });
     const response = JSON.stringify([
-      { title: 'grounded', atom_type: 'insight', body: 'grounded body', source_quote: 'aaaa' },
+      { title: 'grounded', atom_type: 'insight', body: 'grounded body', source_quote: 'aaaaaaaa' },
       { title: 'fabricated', atom_type: 'insight', body: 'fabricated body', source_quote: 'not in source' },
     ]);
     const result = await runPhaseExtractAtoms(engine, {
@@ -546,12 +574,17 @@ describe('#2144: zero-yield tombstone', () => {
       _chat: stubChat(response),
     });
 
+    expect(result.status).toBe('warn');
     expect(result.details?.atoms_extracted).toBe(0);
+    expect((result.details.failures as unknown[]).length).toBe(1);
+    expect(result.details.pages_processed).toBe(0);
     const atoms = await engine.executeRaw<{ count: number }>(
       `SELECT COUNT(*)::int AS count FROM pages WHERE type = 'atom'`,
     );
     expect(atoms[0].count).toBe(0);
     const discovered = await discoverExtractablePages(engine, 'default');
     expect(discovered.map((page) => page.slug)).toContain('article/partially-invalid');
+
+    expect(await readAtomsRollup()).toEqual({ completed: 0, halts: 1 });
   });
 });

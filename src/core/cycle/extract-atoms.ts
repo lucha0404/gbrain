@@ -194,6 +194,7 @@ const EMOTIONAL_REGISTERS = new Set([
   'practical',
   'controversial',
 ]);
+const MIN_SOURCE_QUOTE_SIGNAL_CODE_POINTS = 8;
 
 const EXTRACT_PROMPT = `You extract grounded atomic content nuggets from a source.
 
@@ -213,14 +214,16 @@ Grounding rules are strict:
     provider into a universal trend or rule. Avoid absolute wording such as
     "always", "never", "must", "entirely", or "the key" unless the source
     itself explicitly supports that exact scope.
-  - source_quote must be verbatim and must directly support the atom body.
+  - source_quote must be verbatim, contain at least 8 Unicode letters or
+    numbers (CJK characters count), and directly support the atom body.
     Do not present a draft as a message that was actually sent.
   - Virality is only a framing score; it is never permission to exaggerate.
   - If the source does not support at least one useful grounded atom, output [].
 
 Output a JSON array of atoms (1-3 per transcript, never more than 3).
 Each atom: {title (≤80 chars), atom_type, body (2-4 sentences),
-source_quote (verbatim ≤200 chars), lesson (one sentence), concepts
+source_quote (verbatim ≤200 chars and at least 8 Unicode letters/numbers),
+lesson (one sentence), concepts
 (1-3 topic labels), virality_score (0-100), emotional_register (one of:
 shocking, inspiring, funny, sobering, practical, controversial)}.
 
@@ -673,7 +676,9 @@ export async function runPhaseExtractAtoms(
 
       const parsedAtoms = parseAtomsResponseResult(result.text, sourceExcerpt);
       if (parsedAtoms === null || (parsedAtoms.rawItemCount > 0 && parsedAtoms.atoms.length === 0)) {
-        console.error(`[extract_atoms] invalid atom JSON/schema for ${originLabel}; leaving source retryable`);
+        const validationError = 'invalid atom response: JSON, schema, or source grounding validation failed';
+        console.error(`[extract_atoms] ${validationError} for ${originLabel}; leaving source retryable`);
+        failures.push({ source: originLabel, error: validationError });
         continue;
       }
       const atoms = parsedAtoms.atoms;
@@ -882,6 +887,7 @@ export function parseAtomsResponseResult(raw: string, sourceText: string): Atoms
   }
 
   if (!Array.isArray(parsed) || parsed.length > 3) return null;
+  const normalizedSourceText = normalizedGroundingText(sourceText);
 
   const atoms: ExtractedAtom[] = [];
   for (const item of parsed) {
@@ -893,7 +899,11 @@ export function parseAtomsResponseResult(raw: string, sourceText: string): Atoms
     const sourceQuote = strictString(obj.source_quote, 200);
     if (!title || !atomType || !body || !sourceQuote) return null;
     if (!ATOM_TYPES.includes(atomType as typeof ATOM_TYPES[number])) return null;
-    if (!normalizedGroundingText(sourceText).includes(normalizedGroundingText(sourceQuote))) {
+    const normalizedSourceQuote = normalizedGroundingText(sourceQuote);
+    if (countLetterNumberCodePoints(normalizedSourceQuote) < MIN_SOURCE_QUOTE_SIGNAL_CODE_POINTS) {
+      return null;
+    }
+    if (!normalizedSourceText.includes(normalizedSourceQuote)) {
       return null;
     }
 
@@ -964,6 +974,10 @@ function strictString(value: unknown, maxCodePoints?: number): string | null {
 
 function normalizedGroundingText(value: string): string {
   return value.normalize('NFKC').replace(/\s+/gu, ' ').trim();
+}
+
+function countLetterNumberCodePoints(value: string): number {
+  return value.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
 }
 
 /** Convenience parser surface used by tests and non-cycle callers. */

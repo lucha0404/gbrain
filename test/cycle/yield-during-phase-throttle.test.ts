@@ -66,11 +66,11 @@ describe('extract_atoms yieldDuringPhase throttle (T3)', () => {
     await runPhaseExtractAtoms(engine, {
       sourceId: 'default',
       _transcripts: [
-        { filePath: '/tmp/a', content: 'a', contentHash: 'a1'.repeat(8) },
-        { filePath: '/tmp/b', content: 'b', contentHash: 'b2'.repeat(8) },
-        { filePath: '/tmp/c', content: 'c', contentHash: 'c3'.repeat(8) },
-        { filePath: '/tmp/d', content: 'd', contentHash: 'd4'.repeat(8) },
-        { filePath: '/tmp/e', content: 'e', contentHash: 'e5'.repeat(8) },
+        { filePath: '/tmp/a', content: 'source alpha', contentHash: 'a1'.repeat(8) },
+        { filePath: '/tmp/b', content: 'source bravo', contentHash: 'b2'.repeat(8) },
+        { filePath: '/tmp/c', content: 'source charlie', contentHash: 'c3'.repeat(8) },
+        { filePath: '/tmp/d', content: 'source delta', contentHash: 'd4'.repeat(8) },
+        { filePath: '/tmp/e', content: 'source echo', contentHash: 'e5'.repeat(8) },
       ],
       _pages: [],
       _chat: stubChat(),

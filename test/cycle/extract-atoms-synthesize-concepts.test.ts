@@ -149,6 +149,29 @@ describe('extract_atoms strict grounding boundary', () => {
     }]), source)).toBeNull();
   });
 
+  test('rejects a single-character source_quote even when it occurs in the source', () => {
+    expect(parseAtomsResponseResult(JSON.stringify([{
+      ...validAtom,
+      source_quote: '第',
+    }]), source)).toBeNull();
+  });
+
+  test('rejects a punctuation-only source_quote even when it occurs in the source', () => {
+    const punctuation = '！！！——……？？？';
+    expect(parseAtomsResponseResult(JSON.stringify([{
+      ...validAtom,
+      source_quote: punctuation,
+    }]), `${source}${punctuation}`)).toBeNull();
+  });
+
+  test('rejects a short letter-number token below the eight-code-point floor', () => {
+    const shortToken = 'AI-123';
+    expect(parseAtomsResponseResult(JSON.stringify([{
+      ...validAtom,
+      source_quote: shortToken,
+    }]), `${source} ${shortToken}`)).toBeNull();
+  });
+
   test('rejects a source_quote longer than 200 Unicode code points', () => {
     const longQuote = '真'.repeat(201);
     expect(parseAtomsResponseResult(JSON.stringify([{
@@ -181,6 +204,28 @@ describe('extract_atoms strict grounding boundary', () => {
     expect(parsed?.atoms).toHaveLength(1);
     expect(parsed?.atoms[0].source_quote).toBe('第二段 保留 Unicode 空白。');
   });
+
+  test('accepts grounded Chinese and English quotes with at least eight letters or numbers', () => {
+    const chineseQuote = '中文证据足够八字';
+    const englishQuote = 'DeepSeek V4';
+    expect(parseAtomsResponseResult(JSON.stringify([{
+      ...validAtom,
+      source_quote: chineseQuote,
+    }]), `前文 ${chineseQuote} 后文`)?.atoms).toHaveLength(1);
+    expect(parseAtomsResponseResult(JSON.stringify([{
+      ...validAtom,
+      source_quote: englishQuote,
+    }]), `The selected model is ${englishQuote}.`)?.atoms).toHaveLength(1);
+  });
+
+  test('counts Unicode letters and numbers after NFKC normalization', () => {
+    const fullWidthQuote = 'ＡＢＣ１２３中文';
+    const parsed = parseAtomsResponseResult(JSON.stringify([{
+      ...validAtom,
+      source_quote: fullWidthQuote,
+    }]), 'Prefix ABC123中文 suffix');
+    expect(parsed?.atoms).toHaveLength(1);
+  });
 });
 
 describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
@@ -200,6 +245,7 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
     expect(capturedSystem).toContain('Every factual claim');
     expect(capturedSystem).toContain('Preserve epistemic status');
     expect(capturedSystem).toContain('Preserve scope');
+    expect(capturedSystem).toContain('at least 8 Unicode letters');
     expect(capturedSystem).toContain('Do not present a draft as a message that was actually sent');
     expect(capturedSystem).toContain('Virality is only a framing score');
   });
@@ -219,7 +265,7 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
       {"title":"Founder lesson","atom_type":"anecdote","body":"Story about a founder."}
     ]`);
     const result = await runPhaseExtractAtoms(engine, {
-      _transcripts: [{ filePath: '/fake/meeting.txt', content: 'content', contentHash: 'abc123def' }],
+      _transcripts: [{ filePath: '/fake/meeting.txt', content: 'source content', contentHash: 'abc123def' }],
       _pages: [], // suppress page discovery — transcript-only test
       _chat: chat,
     });
@@ -237,7 +283,7 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
   test('dry-run counts but does NOT write', async () => {
     const chat = stubChat(`[{"title":"x","atom_type":"insight","body":"b"}]`);
     const result = await runPhaseExtractAtoms(engine, {
-      _transcripts: [{ filePath: '/x.txt', content: 'c', contentHash: 'h' }],
+      _transcripts: [{ filePath: '/x.txt', content: 'source content', contentHash: 'h' }],
       _pages: [],
       _chat: chat,
       dryRun: true,
@@ -256,7 +302,7 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
       callCount++;
       if (callCount === 1) throw new Error('rate limit');
       return {
-        text: `[{"title":"t","atom_type":"insight","body":"b","source_quote":"b"}]`,
+        text: `[{"title":"t","atom_type":"insight","body":"b","source_quote":"valid source quote"}]`,
         blocks: [],
         stopReason: 'end' as const,
         usage: { input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_creation_tokens: 0 },
@@ -267,7 +313,7 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
     const result = await runPhaseExtractAtoms(engine, {
       _transcripts: [
         { filePath: '/a.txt', content: 'a', contentHash: 'ha' },
-        { filePath: '/b.txt', content: 'b', contentHash: 'hb' },
+        { filePath: '/b.txt', content: 'valid source quote b', contentHash: 'hb' },
       ],
       _pages: [],
       _chat: chat as typeof import('../../src/core/ai/gateway.ts').chat,
@@ -310,7 +356,7 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
   test('legacy transcript-only fields unchanged when _pages:[] (regression guard)', async () => {
     const chat = stubChat(`[{"title":"r","atom_type":"insight","body":"b"}]`);
     const result = await runPhaseExtractAtoms(engine, {
-      _transcripts: [{ filePath: '/regression.txt', content: 'c', contentHash: 'rH' }],
+      _transcripts: [{ filePath: '/regression.txt', content: 'source content', contentHash: 'rH' }],
       _pages: [],
       _chat: chat,
     });
@@ -510,7 +556,7 @@ describe('#2123: extractor stamps concepts → synthesize_concepts consumes via 
       {"title":"iPhone portal popup is flaky","atom_type":"critique","body":"CNA probe behavior differs across iOS versions.","concepts":["captive-portal"]}
     ]`);
     const extract = await runPhaseExtractAtoms(engine, {
-      _transcripts: [{ filePath: '/fake/notes.txt', content: 'content', contentHash: 'cc2123' }],
+      _transcripts: [{ filePath: '/fake/notes.txt', content: 'source content', contentHash: 'cc2123' }],
       _pages: [],
       _chat: chat,
     });
