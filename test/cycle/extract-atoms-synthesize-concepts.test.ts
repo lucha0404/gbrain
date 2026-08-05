@@ -298,6 +298,81 @@ describe('v0.41 T5: runPhaseExtractAtoms via stubbed chat', () => {
     expect(result.details?.failures).toEqual([]);
   });
 
+  test('ranks repair quote candidates using the failed atom on long sources', async () => {
+    const lines = Array.from({ length: 100 }, (_, index) =>
+      `Generic filler sentence number ${index} discusses routine background material.`);
+    const exactQuote = 'The retrofit captures kiln waste heat to reduce natural gas consumption.';
+    lines[73] = exactQuote;
+    const source = lines.join('\n');
+    const calls: ChatOpts[] = [];
+    const responses = [
+      `{"atoms":[{"title":"Kiln retrofit","atom_type":"insight","body":"The retrofit captures waste heat.","source_quote":"The retrofit captures kiln heat and reduces gas use."}]}`,
+      `{"atoms":[{"title":"Kiln retrofit","atom_type":"insight","body":"The retrofit captures waste heat.","source_quote":"${exactQuote}"}]}`,
+    ];
+    const chat = async (o: ChatOpts): Promise<ChatResult> => {
+      calls.push(o);
+      const text = responses[calls.length - 1]!;
+      return {
+        text,
+        blocks: [{ type: 'text', text }],
+        stopReason: 'end',
+        usage: { input_tokens: 10, output_tokens: 10, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        model: 'deepseek:deepseek-v4-flash',
+        providerId: 'deepseek',
+      };
+    };
+
+    const result = await runPhaseExtractAtoms(engine, {
+      _transcripts: [{ filePath: '/long-repair.txt', content: source, contentHash: 'long-repair-hash' }],
+      _pages: [],
+      _chat: chat as typeof import('../../src/core/ai/gateway.ts').chat,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1].messages.at(-1)?.content).toContain(exactQuote);
+    expect(result.details?.atoms_extracted).toBe(1);
+  });
+
+  test('an empty repair response stays retryable and never stamps atoms_scan_hash', async () => {
+    const slug = 'retry/empty-grounding-repair';
+    const source = 'This source contains enough grounded material for a useful atom.';
+    await engine.putPage(slug, {
+      title: 'Retry empty repair',
+      type: 'note',
+      compiled_truth: source,
+      frontmatter: { type: 'note' },
+    });
+    let calls = 0;
+    const chat = async (_o: ChatOpts): Promise<ChatResult> => {
+      calls++;
+      const text = calls === 1
+        ? `{"atoms":[{"title":"Bad","atom_type":"insight","body":"Useful atom","source_quote":"unsupported paraphrase here"}]}`
+        : '{"atoms":[]}';
+      return {
+        text,
+        blocks: [{ type: 'text', text }],
+        stopReason: 'end',
+        usage: { input_tokens: 10, output_tokens: 10, cache_read_tokens: 0, cache_creation_tokens: 0 },
+        model: 'deepseek:deepseek-v4-flash',
+        providerId: 'deepseek',
+      };
+    };
+
+    const result = await runPhaseExtractAtoms(engine, {
+      _transcripts: [],
+      _pages: [{ slug, content: source, contentHash: 'retry-empty-grounding-hash' }],
+      _chat: chat as typeof import('../../src/core/ai/gateway.ts').chat,
+    });
+
+    expect(calls).toBe(2);
+    expect(result.details?.pages_processed).toBe(0);
+    expect(result.details?.failures).toEqual([{
+      source: slug,
+      error: 'repair returned an empty atom set; source remains retryable',
+    }]);
+    expect((await engine.getPage(slug))?.frontmatter?.atoms_scan_hash).toBeUndefined();
+  });
+
   test('two invalid responses leave the page retryable and expose only failure codes', async () => {
     const source = 'This page has sufficiently long source material for retry testing.';
     let invalidCalls = 0;

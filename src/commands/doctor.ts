@@ -3063,6 +3063,27 @@ async function checkEmbeddingEnvOverride(engine: BrainEngine): Promise<Check> {
   };
 }
 
+export function deepSeekToolLoopThinkingIssue(
+  resolvedModel: string | null,
+  providerChatOptions: Record<string, unknown> | undefined,
+): string | null {
+  if (!resolvedModel?.startsWith('deepseek:')) return null;
+  const provider = providerChatOptions?.deepseek;
+  const scoped = providerChatOptions?.[resolvedModel];
+  const providerThinking = provider && typeof provider === 'object'
+    ? (provider as Record<string, any>).thinking
+    : undefined;
+  const scopedThinking = scoped && typeof scoped === 'object'
+    ? (scoped as Record<string, any>).thinking
+    : undefined;
+  const effective = scopedThinking ?? providerThinking;
+  if (!effective || typeof effective !== 'object') return null;
+  if ((effective as Record<string, unknown>).type === 'disabled') return null;
+  return `Subagent model resolves to "${resolvedModel}" with DeepSeek thinking explicitly enabled. ` +
+    `gbrain does not persist reasoning_content for tool-loop replay, so runtime will refuse before a tool executes. ` +
+    `Fix: set provider_chat_options.${resolvedModel}.thinking.type to "disabled".`;
+}
+
 export async function checkSubagentCapability(engine: BrainEngine): Promise<Check> {
   try {
     const { classifyCapabilities } = await import('../core/ai/capabilities.ts');
@@ -3125,6 +3146,21 @@ export async function checkSubagentCapability(engine: BrainEngine): Promise<Chec
       const issue = explain(tierSubagent, resolvedSource);
       if (issue) return issue;
     }
+    if (resolvedModel?.startsWith('deepseek:')) {
+      const { loadConfig } = await import('../core/config.ts');
+      const cfg = loadConfig();
+      const issue = deepSeekToolLoopThinkingIssue(
+        resolvedModel,
+        cfg?.provider_chat_options as Record<string, unknown> | undefined,
+      );
+      if (issue) {
+        return {
+          name: 'subagent_capability',
+          status: 'warn',
+          message: issue,
+        };
+      }
+    }
     // v0.37 (T10 / D7) + v0.38 (D7 capability rename): warn when the configured
     // chat_model is non-Anthropic AND ANTHROPIC_API_KEY isn't set. With
     // agent.use_gateway_loop=false (the v0.38 default), subagent jobs still
@@ -3157,7 +3193,8 @@ export async function checkSubagentCapability(engine: BrainEngine): Promise<Chec
       name: 'subagent_capability',
       status: 'ok',
       message: resolvedModel && resolvedSource
-        ? `Subagent model resolves via ${resolvedSource} to "${resolvedModel}" with full tool-loop capability`
+        ? `Subagent model resolves via ${resolvedSource} to "${resolvedModel}" with full tool-loop capability` +
+          (resolvedModel.startsWith('deepseek:') ? ' (non-thinking mode)' : '')
         : `Subagent tier resolves to default (claude-sonnet-4-6) — full tool-loop capability`,
     };
   } catch (e) {

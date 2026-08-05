@@ -2565,6 +2565,7 @@ export async function expand(query: string): Promise<string[]> {
     const cfg = requireConfig();
     const providerOptions: Record<string, any> = {};
     applyConfiguredProviderOptions(providerOptions, cfg, recipe.id, modelId);
+    applyDeepSeekThinkingSafety(providerOptions, recipe.id);
     const configuredProviderOptions = Object.keys(providerOptions).length > 0
       ? providerOptions
       : undefined;
@@ -3237,6 +3238,37 @@ function applyConfiguredProviderOptions(
 }
 
 /**
+ * DeepSeek V4 enables thinking by default. Its thinking + tool-call protocol
+ * requires reasoning_content to be replayed on every later request, but the
+ * provider-neutral ChatBlock contract intentionally does not persist chain of
+ * thought. Default DeepSeek to non-thinking and fail closed if an operator
+ * explicitly enables thinking on a tool call instead of allowing a turn-2
+ * HTTP 400 after a tool has already executed.
+ */
+function applyDeepSeekThinkingSafety(
+  providerOptions: Record<string, any>,
+  recipeId: string,
+  hasTools = false,
+): void {
+  if (recipeId !== 'deepseek') return;
+  const existing = isPlainObject(providerOptions.deepseek)
+    ? providerOptions.deepseek
+    : {};
+  if (existing.thinking === undefined) {
+    providerOptions.deepseek = deepMergeRecords(existing, {
+      thinking: { type: 'disabled' },
+    });
+    return;
+  }
+  const thinking = isPlainObject(existing.thinking) ? existing.thinking : undefined;
+  if (hasTools && thinking?.type !== 'disabled') {
+    throw new AIConfigError(
+      'DeepSeek thinking mode is not supported with gbrain tool loops because reasoning_content is not persisted for replay. Set provider_chat_options.deepseek.thinking.type to "disabled".',
+    );
+  }
+}
+
+/**
  * Gateway-side guardrail wrapper. Observe-only, fail-open, never throws into
  * the gateway. No-op when no guardrail is registered. The guardrail boundary
  * intentionally sees ONLY the user/query/tool-input text — never system
@@ -3439,6 +3471,7 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
     if (promptCacheKey) providerOptions.openai = { promptCacheKey };
   }
   applyConfiguredProviderOptions(providerOptions, cfg, recipe.id, modelId);
+  applyDeepSeekThinkingSafety(providerOptions, recipe.id, !!opts.tools?.length);
 
   // Derive ONE canonical cache-control value AFTER config merging and reuse
   // it for every breakpoint (system block, last tool def, call-level). If

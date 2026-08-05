@@ -98,6 +98,20 @@ describe('doctor command', () => {
     expect(check.status).toBe('ok');
     expect(check.message).toContain('deepseek:deepseek-v4-flash');
     expect(check.message).not.toContain('runs hot');
+    expect(check.message).toContain('non-thinking mode');
+  });
+
+  test('DeepSeek capability warns when tool-loop thinking is explicitly enabled', async () => {
+    const { deepSeekToolLoopThinkingIssue } = await import('../src/commands/doctor.ts');
+    expect(deepSeekToolLoopThinkingIssue('deepseek:deepseek-v4-flash', {
+      'deepseek:deepseek-v4-flash': { thinking: { type: 'enabled' } },
+    })).toContain('runtime will refuse before a tool executes');
+    expect(deepSeekToolLoopThinkingIssue('deepseek:deepseek-v4-flash', {
+      deepseek: { thinking: { type: 'disabled' } },
+    })).toBeNull();
+    expect(deepSeekToolLoopThinkingIssue('openai:gpt-5.2', {
+      deepseek: { thinking: { type: 'enabled' } },
+    })).toBeNull();
   });
 
   test('subagent_capability checks models.default before tier fallback', async () => {

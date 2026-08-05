@@ -385,6 +385,36 @@ describe('chat touchpoint — provider_chat_options passthrough', () => {
     expect(await capturedOutput.responseFormat).toEqual({ type: 'json' });
   });
 
+  test('DeepSeek defaults to non-thinking so multi-turn tool loops are replay-safe', async () => {
+    const providerOptions = await captureProviderOptions({
+      chat_model: 'deepseek:deepseek-v4-flash',
+      env: { DEEPSEEK_API_KEY: 'fake' },
+    });
+
+    expect(providerOptions).toEqual({
+      deepseek: { thinking: { type: 'disabled' } },
+    });
+  });
+
+  test('DeepSeek tool calls fail closed when thinking is explicitly enabled', async () => {
+    configureGateway({
+      chat_model: 'deepseek:deepseek-v4-flash',
+      provider_chat_options: {
+        deepseek: { thinking: { type: 'enabled' } },
+      },
+      env: { DEEPSEEK_API_KEY: 'fake' },
+    });
+
+    await expect(chat({
+      messages: [{ role: 'user', content: 'Use a tool.' }],
+      tools: [{
+        name: 'search',
+        description: 'Search',
+        inputSchema: { type: 'object', properties: {} },
+      }],
+    })).rejects.toThrow('DeepSeek thinking mode is not supported with gbrain tool loops');
+  });
+
   test('model-scoped option overrides provider-scoped option', async () => {
     const providerOptions = await captureProviderOptions({
       chat_model: 'anthropic:claude-sonnet-4-6',

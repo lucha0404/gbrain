@@ -679,6 +679,7 @@ export async function runPhaseExtractAtoms(
       estimatedSpendUsd = budgetTracker.totalSpent;
 
       let inspection = inspectAtomsResponse(result.text, sourceExcerpt);
+      let repairedResponse = false;
       if (!inspection.ok) {
         const firstFailure = inspection.failure;
         console.error(
@@ -693,13 +694,14 @@ export async function runPhaseExtractAtoms(
             { role: 'assistant', content: result.text },
             {
               role: 'user',
-              content: atomRepairFeedback(firstFailure, sourceExcerpt),
+              content: atomRepairFeedback(firstFailure, sourceExcerpt, result.text),
             },
           ],
           maxTokens: 4096,
           responseFormat: 'json',
         });
         await maybeYield();
+        repairedResponse = true;
         estimatedSpendUsd = budgetTracker.totalSpent;
         inspection = inspectAtomsResponse(result.text, sourceExcerpt);
         if (!inspection.ok) {
@@ -717,6 +719,12 @@ export async function runPhaseExtractAtoms(
       }
       const atoms = inspection.result.atoms;
       if (atoms.length === 0) {
+        if (repairedResponse) {
+          const validationError = 'repair returned an empty atom set; source remains retryable';
+          console.error(`[extract_atoms] ${validationError} for ${originLabel}`);
+          failures.push({ source: originLabel, error: validationError });
+          continue;
+        }
         // #2144: tombstone zero-yield pages so they stop being rediscovered.
         // Idempotency is keyed on atom rows — a page that yields no atoms
         // leaves no row, so pre-fix it re-entered the discovery window every
@@ -922,7 +930,37 @@ function formatAtomFailure(failure: AtomResponseFailure): string {
     : `${failure.code},item=${failure.itemIndex}`;
 }
 
-function exactSourceQuoteCandidates(sourceText: string, limit = 24): string[] {
+function groundingSignalUnits(value: string): Set<string> {
+  const normalized = normalizedGroundingText(value).toLocaleLowerCase();
+  const units = new Set<string>();
+  for (const word of normalized.match(/[\p{L}\p{N}]{2,}/gu) ?? []) {
+    units.add(`w:${word}`);
+  }
+  for (const char of normalized.match(/\p{Script=Han}/gu) ?? []) {
+    units.add(`h:${char}`);
+  }
+  return units;
+}
+
+function atomRepairHint(raw: string, failure: AtomResponseFailure): string {
+  const parsed = parseJsonResponse(raw);
+  if (!parsed.ok) return '';
+  const value = parsed.value;
+  const items = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object' && Array.isArray((value as Record<string, unknown>).atoms)
+      ? (value as { atoms: unknown[] }).atoms
+      : [];
+  const item = items[failure.itemIndex ?? 0];
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return '';
+  const obj = item as Record<string, unknown>;
+  return ['title', 'body', 'source_quote']
+    .map(key => typeof obj[key] === 'string' ? obj[key] : '')
+    .filter(Boolean)
+    .join(' ');
+}
+
+function exactSourceQuoteCandidates(sourceText: string, hintText: string, limit = 24): string[] {
   const candidates: string[] = [];
   const seen = new Set<string>();
   const add = (raw: string): void => {
@@ -960,17 +998,48 @@ function exactSourceQuoteCandidates(sourceText: string, limit = 24): string[] {
   }
 
   if (candidates.length <= limit) return candidates;
-  const sampled: string[] = [];
-  for (let index = 0; index < limit; index++) {
-    const sourceIndex = Math.round(index * (candidates.length - 1) / (limit - 1));
-    const candidate = candidates[sourceIndex]!;
-    if (sampled.at(-1) !== candidate) sampled.push(candidate);
+
+  const hintUnits = groundingSignalUnits(hintText);
+  const targeted = hintUnits.size === 0
+    ? []
+    : candidates
+      .map((candidate, index) => {
+        const units = groundingSignalUnits(candidate);
+        let overlap = 0;
+        for (const unit of units) if (hintUnits.has(unit)) overlap++;
+        return { candidate, index, overlap };
+      })
+      .filter(row => row.overlap > 0)
+      .sort((a, b) => b.overlap - a.overlap || a.index - b.index)
+      .slice(0, 16)
+      .map(row => row.candidate);
+
+  const selected = new Set(targeted);
+  const coverageSlots = limit - selected.size;
+  for (let index = 0; index < coverageSlots; index++) {
+    const sourceIndex = coverageSlots === 1
+      ? 0
+      : Math.round(index * (candidates.length - 1) / (coverageSlots - 1));
+    selected.add(candidates[sourceIndex]!);
   }
-  return sampled;
+  if (selected.size < limit) {
+    for (const candidate of candidates) {
+      selected.add(candidate);
+      if (selected.size >= limit) break;
+    }
+  }
+  return [...selected].slice(0, limit);
 }
 
-function atomRepairFeedback(failure: AtomResponseFailure, sourceText: string): string {
-  const allowedQuotes = exactSourceQuoteCandidates(sourceText);
+function atomRepairFeedback(
+  failure: AtomResponseFailure,
+  sourceText: string,
+  failedResponse: string,
+): string {
+  const allowedQuotes = exactSourceQuoteCandidates(
+    sourceText,
+    atomRepairHint(failedResponse, failure),
+  );
   const focus = failure.code === 'invalid_grounding'
     ? 'Every source_quote must be copied character-for-character from one exact_source_quote_candidate below, with no edits, translation, paraphrase, prefix, or suffix.'
     : failure.code === 'too_many_atoms'

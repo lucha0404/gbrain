@@ -152,6 +152,22 @@ brain_push() {
   return 1
 }`;
 
+const GBRAIN_DIR_RESOLVE = `# GBRAIN_HOME is the parent of .gbrain, matching gbrainPath()/configDir().
+_gbrain_parent="\${GBRAIN_HOME:-$HOME}"
+# Match configDir(): trim surrounding whitespace, require an absolute path,
+# and reject parent traversal before appending .gbrain.
+_gbrain_parent="\${_gbrain_parent#"\${_gbrain_parent%%[![:space:]]*}"}"
+_gbrain_parent="\${_gbrain_parent%"\${_gbrain_parent##*[![:space:]]}"}"
+[ -n "$_gbrain_parent" ] || _gbrain_parent="$HOME"
+case "$_gbrain_parent" in
+  /*) ;;
+  *) echo "GBRAIN_HOME must be an absolute path: $_gbrain_parent" >&2; exit 2 ;;
+esac
+case "/$_gbrain_parent/" in
+  */../*) echo "GBRAIN_HOME must not contain .. segments: $_gbrain_parent" >&2; exit 2 ;;
+esac
+_gbrain_dir="\${_gbrain_parent%/}/.gbrain"`;
+
 function renderPostCommitHook(): string {
   return `#!/usr/bin/env bash
 ${HOOK_BANNER}
@@ -160,9 +176,7 @@ ${HOOK_BANNER}
 # Bypass: git commit --no-verify.
 set -euo pipefail
 
-# GBRAIN_HOME is the parent of .gbrain, matching gbrainPath()/configDir().
-_gbrain_dir="\${GBRAIN_HOME:+\${GBRAIN_HOME}/.gbrain}"
-[ -n "$_gbrain_dir" ] || _gbrain_dir="$HOME/.gbrain"
+${GBRAIN_DIR_RESOLVE}
 
 _branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
 if [ "$_branch" = "HEAD" ]; then
@@ -188,9 +202,7 @@ ${HELPER_BANNER}
 #   scripts/brain-commit-push.sh --push-only [branch]
 set -euo pipefail
 
-# GBRAIN_HOME is the parent of .gbrain, matching gbrainPath()/configDir().
-_gbrain_dir="\${GBRAIN_HOME:+\${GBRAIN_HOME}/.gbrain}"
-[ -n "$_gbrain_dir" ] || _gbrain_dir="$HOME/.gbrain"
+${GBRAIN_DIR_RESOLVE}
 
 ${PUSH_RETRY}
 
