@@ -44,6 +44,22 @@ describe('BudgetMeter', () => {
     expect(r2.reason).toContain('BUDGET_EXHAUSTED');
   });
 
+  test('DeepSeek V4 Flash participates in cumulative budget enforcement', () => {
+    const meter = new BudgetMeter({ budgetUsd: 0.50, phase: 'auto_think', auditPath });
+    const call = {
+      modelId: 'deepseek:deepseek-v4-flash',
+      estimatedInputTokens: 1_000_000,
+      maxOutputTokens: 1_000_000,
+      label: 'deepseek',
+    };
+    const first = meter.check(call);
+    const second = meter.check(call);
+    expect(first.allowed).toBe(true);
+    expect(first.estimatedCostUsd).toBeCloseTo(0.42, 5);
+    expect(second.allowed).toBe(false);
+    expect(second.reason).toContain('BUDGET_EXHAUSTED');
+  });
+
   test('budget=0 disables the gate (cycle runs unbounded)', () => {
     const meter = new BudgetMeter({ budgetUsd: 0, phase: 'drift', auditPath });
     const r = meter.check({ modelId: 'claude-opus-4-7', estimatedInputTokens: 100_000, maxOutputTokens: 100_000, label: 'huge' });

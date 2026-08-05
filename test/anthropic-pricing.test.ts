@@ -49,6 +49,11 @@ describe('estimateMaxCostUsd', () => {
     expect(cost).toBeCloseTo(1.75, 5);
   });
 
+  test('canonical DeepSeek V4 Flash pricing keeps Dream budgets enforceable', () => {
+    const cost = estimateMaxCostUsd('deepseek:deepseek-v4-flash', 1_000_000, 1_000_000);
+    expect(cost).toBeCloseTo(0.42, 5);
+  });
+
   test('unknown model → returns null (caller warn-once + bypass)', () => {
     expect(estimateMaxCostUsd('mistral:medium', 1_000, 1_000)).toBeNull();
     expect(estimateMaxCostUsd('gpt-5', 1_000, 1_000)).toBeNull();

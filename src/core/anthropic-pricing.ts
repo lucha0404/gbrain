@@ -4,19 +4,20 @@
  *
  * Kept as a distinct export because many callers look up by bare Claude id
  * (`claude-opus-4-7`) and because `estimateMaxCostUsd` carries the
- * null-on-miss contract the dream-cycle budget gate depends on. The dollar
+ * null-on-miss contract the dream-cycle budget gate depends on. Canonical
+ * non-Anthropic provider:model ids are also accepted so the gate remains
+ * enforceable when a Dream phase is routed away from Claude. The dollar
  * numbers live in model-pricing.ts — DO NOT hand-edit prices here; this map is
  * derived from the `anthropic:` canonical entries (prefix stripped), so it
  * cannot drift from the other pricing views. (Pre-unification this map and
  * takes-quality-eval/pricing.ts duplicated the numbers and drifted: Opus 4.7
  * read $15/$75 in one and $5/$25 in the other.)
  *
- * Codex P1 #10 fold: non-Anthropic models (gemini, gpt, anything not in this
- * map) bypass the budget gate with a `BUDGET_METER_NO_PRICING` warn once per
- * process. The cycle still runs unbounded for those models.
+ * Unknown models bypass the budget gate with a `BUDGET_METER_NO_PRICING`
+ * warning once per process. The cycle still runs unbounded for those models.
  */
 
-import { CANONICAL_PRICING, type ModelPricing } from './model-pricing.ts';
+import { CANONICAL_PRICING, canonicalLookup, type ModelPricing } from './model-pricing.ts';
 import { splitProviderModelId } from './model-id.ts';
 
 export type { ModelPricing };
@@ -59,6 +60,7 @@ export function estimateMaxCostUsd(
     const { model: tail } = splitProviderModelId(modelId);
     if (tail) p = ANTHROPIC_PRICING[tail];
   }
+  if (!p) p = canonicalLookup(modelId);
   if (!p) return null;
   return (
     (estimatedInputTokens / 1_000_000) * p.input +

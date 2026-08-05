@@ -467,9 +467,11 @@ describe('E2E synthesize chunking — fan-out shape', () => {
         `SELECT idempotency_key FROM minion_jobs WHERE name = 'subagent' ORDER BY id`,
       );
       expect(rows).toHaveLength(2);
+      const baseKey =
+        `dream:synth-v2:default:filename:${encodeURIComponent(basename)}:${hash16}`;
       for (const row of rows) {
         expect(row.idempotency_key).toMatch(
-          new RegExp(`^dream:synth:${escapeRe(filePath)}:${hash16}:c\\d+of2$`),
+          new RegExp(`^${escapeRe(baseKey)}:c\\d+of2$`),
         );
       }
     } finally {
