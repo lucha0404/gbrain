@@ -60,7 +60,7 @@ export interface RunThinkOpts {
   until?: string;
   /** When set, MCP-bound calls forward this to the gather phase (server-side filter). */
   takesHoldersAllowList?: string[];
-  /** Inject an LLM client (for tests). Defaults to a fresh Anthropic SDK client. */
+  /** Inject an Anthropic-shaped LLM client (for tests). Defaults to the AI gateway adapter. */
   client?: ThinkLLMClient;
   /** Inject a question-embedding function. When omitted, vector takes search is skipped. */
   embedQuestion?: (q: string) => Promise<Float32Array | null>;
@@ -736,6 +736,19 @@ async function tryBuildGatewayClient(
     return null;
   }
 
+  return createGatewayThinkLLMClient(modelStr, opts);
+}
+
+/**
+ * Adapt the provider-neutral gateway.chat() surface to ThinkLLMClient's
+ * Anthropic Message-shaped contract. Callers that already resolved their
+ * model can reuse this without constructing a provider-specific SDK client.
+ */
+export function createGatewayThinkLLMClient(
+  modelUsed: string,
+  opts: { explicitModel?: boolean } = {},
+): ThinkLLMClient {
+  const modelStr = normalizeModelId(modelUsed);
   return {
     create: async (params): Promise<Anthropic.Message> => {
       // Build ChatOpts from Anthropic.MessageCreateParamsNonStreaming.
@@ -845,6 +858,7 @@ function buildGracefulMessage(modelStr: string): {
 // `__setChatTransportForTests` in gateway.ts.
 export const __thinkAdapter = {
   tryBuildGatewayClient,
+  createGatewayThinkLLMClient,
   chatResultToMessage,
   mapStopReason,
   buildGracefulMessage,

@@ -1,7 +1,7 @@
 /**
  * v0.28.1: `gbrain eval longmemeval <dataset.jsonl>` — public LongMemEval
  * benchmark adapter. Spins up an in-memory PGLite, imports each question's
- * haystack, runs hybridSearch, optionally generates an answer via Anthropic,
+ * haystack, runs hybridSearch, optionally generates an answer via the AI gateway,
  * emits hypothesis JSONL on stdout for downstream `evaluate_qa.py`.
  *
  * Hermetic by design: cli.ts skips connectEngine() when this subcommand
@@ -10,15 +10,15 @@
  */
 
 import { readFileSync, existsSync, openSync, writeSync, closeSync, writeFileSync } from 'fs';
-import Anthropic from '@anthropic-ai/sdk';
 import { withBenchmarkBrain, resetTables } from '../eval/longmemeval/harness.ts';
 import { haystackToPages, type LongMemEvalQuestion } from '../eval/longmemeval/adapter.ts';
 import { renderChatBlock, type ChatSessionForPrompt } from '../eval/longmemeval/sanitize.ts';
 import { importFromContent } from '../core/import-file.ts';
 import { hybridSearch } from '../core/search/hybrid.ts';
 import { expandQuery } from '../core/search/expansion.ts';
-import { resolveModel } from '../core/model-config.ts';
-import type { ThinkLLMClient } from '../core/think/index.ts';
+import { DEFAULT_ALIASES, resolveModel } from '../core/model-config.ts';
+import { normalizeModelId } from '../core/model-id.ts';
+import { createGatewayThinkLLMClient, type ThinkLLMClient } from '../core/think/index.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 import type { PGLiteEngine } from '../core/pglite-engine.ts';
@@ -33,20 +33,25 @@ import {
   type AliasMap,
 } from '../eval/longmemeval/extract.ts';
 import { extractCandidateEntities } from '../core/think/entity-extract.ts';
-import { splitProviderModelId } from '../core/model-id.ts';
 import { resolveEntitySlugWithSource, type ResolutionSource } from '../core/entities/resolve.ts';
 import { formatTrajectoryBlock } from '../core/trajectory-format.ts';
 
 /**
- * v0.40.2.0 — methodology disclosure marker. Stamped on the top-level
- * JSON envelope when trajectory routing is enabled so downstream
- * readers see the preprocessing step is in the pipeline. Per the
- * Codex D1 decision: the temporal-reasoning delta we publish is
- * "gbrain + Haiku-preprocess pipeline" vs "gbrain alone", not directly
- * comparable to LongMemEval's published baselines without this
- * disclosure.
+ * Methodology disclosure marker. Stamped on every per-question JSON row when
+ * trajectory routing is enabled so downstream readers see both the
+ * preprocessing step and the actual extractor model in the pipeline. Preserve
+ * the historical v1 marker byte-for-byte for the canonical default Haiku;
+ * non-default extractors use a model-specific v2 marker.
  */
-const TRAJECTORY_METHODOLOGY_NOTE = 'extractor=haiku-preprocess-full-haystack-v1';
+const LEGACY_HAIKU_METHODOLOGY_NOTE = 'extractor=haiku-preprocess-full-haystack-v1';
+const MODEL_SPECIFIC_METHODOLOGY_SUFFIX = 'preprocess-full-haystack-v2';
+
+function buildTrajectoryMethodologyNote(extractorModel: string): string {
+  const normalizedModel = normalizeModelId(extractorModel);
+  return normalizedModel === DEFAULT_ALIASES.haiku
+    ? LEGACY_HAIKU_METHODOLOGY_NOTE
+    : `extractor=${normalizedModel}-${MODEL_SPECIFIC_METHODOLOGY_SUFFIX}`;
+}
 
 const HUGGINGFACE_URL = 'https://huggingface.co/datasets/xiaowu0162/longmemeval';
 
@@ -365,16 +370,16 @@ async function generateAnswer(
 }
 
 export interface RunOpts {
-  /** Inject an Anthropic client for tests; defaults to a fresh SDK client. */
+  /** Inject an Anthropic-shaped client for tests; defaults to the AI gateway adapter. */
   client?: ThinkLLMClient;
   /**
-   * v0.40.2.0 — separate stub for the Haiku claim extractor. Tests can
+   * v0.40.2.0 — separate stub for the claim extractor. Tests can
    * isolate "extractor stubbed, answer-gen real" from "extractor real,
-   * answer-gen stubbed". Defaults to the same SDK client when omitted.
+   * answer-gen stubbed". Defaults to its own AI gateway adapter when omitted.
    */
   extractorClient?: ThinkLLMClient;
   /**
-   * v0.40.2.0 — model id for the extractor's Haiku call. Defaults to
+   * v0.40.2.0 — model id for the extractor call. Defaults to
    * a tier-utility model via resolveModel.
    */
   extractorModel?: string;
@@ -469,24 +474,6 @@ export async function runEvalLongMemEval(args: string[], runOpts: RunOpts = {}):
     fallback: 'sonnet',
   });
 
-  // Wrap Anthropic SDK so its `.messages.create` shape matches ThinkLLMClient.
-  // Same pattern as src/core/think/index.ts:247-249 — EXCEPT think's default
-  // client routes through the gateway, which parses `provider:model` recipe
-  // ids. This eval's client is a raw SDK by design (hermetic, no gateway
-  // dependency), and resolveModel returns RECIPE ids (`anthropic:claude-…`);
-  // passing one through unstripped 404s every answer/extractor call, which
-  // surfaces downstream as all-upstream_error batches in the nightly probe.
-  const toSdkModel = (m: string): string => splitProviderModelId(m).model || m;
-  const realClient = new Anthropic();
-  const client: ThinkLLMClient = runOpts.client ?? {
-    create: (params, callOpts) =>
-      realClient.messages.create({ ...params, model: toSdkModel(params.model) }, callOpts),
-  };
-  // v0.40.2.0 — separate extractor client (defaults to same SDK).
-  const extractorClient: ThinkLLMClient = runOpts.extractorClient ?? {
-    create: (params, callOpts) =>
-      realClient.messages.create({ ...params, model: toSdkModel(params.model) }, callOpts),
-  };
   const trajectoryEnabled = !opts.noTrajectory;
   const extractorModel = trajectoryEnabled
     ? await resolveModel(null, {
@@ -495,6 +482,22 @@ export async function runEvalLongMemEval(args: string[], runOpts: RunOpts = {}):
         fallback: 'haiku',
       })
     : '';
+  const methodologyNote = trajectoryEnabled
+    ? buildTrajectoryMethodologyNote(extractorModel)
+    : '';
+
+  // Keep injected clients as the highest-priority test seam. Live defaults use
+  // the same provider-neutral gateway adapter as `gbrain think`, so recipe ids
+  // such as `deepseek:deepseek-v4-flash` reach their configured provider rather
+  // than being sent to the Anthropic SDK. Benchmark calls keep the historical
+  // hard-error behavior for provider/config failures; the per-question answer
+  // loop and fail-open extractor already own those error boundaries.
+  const client: ThinkLLMClient = runOpts.client
+    ?? createGatewayThinkLLMClient(model, { explicitModel: true });
+  const extractorClient: ThinkLLMClient = runOpts.extractorClient
+    ?? (trajectoryEnabled
+      ? createGatewayThinkLLMClient(extractorModel, { explicitModel: true })
+      : client);
 
   process.stderr.write(`[longmemeval] estimated 20-60 minutes for ${questions.length} questions; use --limit N for shorter runs\n`);
   process.stderr.write(`[longmemeval] connecting in-memory brain...\n`);
@@ -539,6 +542,7 @@ export async function runEvalLongMemEval(args: string[], runOpts: RunOpts = {}):
           trajectoryEnabled,
           extractorClient,
           extractorModel,
+          methodologyNote,
         });
         progress.tick(1, q.question_id);
       } catch (err: any) {
@@ -594,7 +598,7 @@ export async function runEvalLongMemEval(args: string[], runOpts: RunOpts = {}):
     const total = cache.hits + cache.misses;
     const pct = total === 0 ? 0 : (cache.hits / total) * 100;
     process.stderr.write(`[longmemeval] extractor.cache_hits: ${cache.hits} / ${total} sessions (${pct.toFixed(1)}%, cached_bodies=${cache.size})\n`);
-    process.stderr.write(`[longmemeval] methodology_note: ${TRAJECTORY_METHODOLOGY_NOTE}\n`);
+    process.stderr.write(`[longmemeval] methodology_note: ${methodologyNote}\n`);
   }
 
   // v0.40.1.0 (Track D / T2) — emit by_type_summary as the FINAL line if
@@ -623,6 +627,7 @@ interface TrajectoryRunOpts {
   trajectoryEnabled: boolean;
   extractorClient: ThinkLLMClient;
   extractorModel: string;
+  methodologyNote: string;
 }
 
 async function runOneQuestion(
@@ -778,7 +783,7 @@ async function runOneQuestion(
       trajectory_points: trajectoryPoints,
       entity_resolved: entityResolved,
       resolution_source: resolutionSource,
-      methodology_note: TRAJECTORY_METHODOLOGY_NOTE,
+      methodology_note: traj.methodologyNote,
     } : {}),
   });
 }

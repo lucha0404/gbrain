@@ -19,7 +19,13 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { runEvalLongMemEval } from '../src/commands/eval-longmemeval.ts';
 import type { ThinkLLMClient } from '../src/core/think/index.ts';
+import {
+  __setGenerateTextTransportForTests,
+  configureGateway,
+  resetGateway,
+} from '../src/core/ai/gateway.ts';
 import type { LongMemEvalQuestion } from '../src/eval/longmemeval/adapter.ts';
+import { withEnv } from './helpers/with-env.ts';
 
 let tmpDir: string;
 let datasetPath: string;
@@ -129,10 +135,12 @@ describe('runEvalLongMemEval — trajectory routing on (default)', () => {
   test('temporal-reasoning question gets the trajectory block in the prompt', async () => {
     const state: StubState = { answerCalls: [], extractorCalls: 0 };
     const { answerClient, extractorClient } = stubClients(state);
-    await runEvalLongMemEval(
-      [datasetPath, '--keyword-only', '--output', outputPath],
-      { client: answerClient, extractorClient, extractorModel: 'stub' },
-    );
+    await withEnv({ GBRAIN_MODEL: undefined }, async () => {
+      await runEvalLongMemEval(
+        [datasetPath, '--keyword-only', '--output', outputPath],
+        { client: answerClient, extractorClient },
+      );
+    });
 
     // q1 (temporal) → answer-gen call must include trajectory block.
     // q2 (other) → no trajectory block.
@@ -159,14 +167,66 @@ describe('runEvalLongMemEval — trajectory routing on (default)', () => {
   });
 });
 
+describe('runEvalLongMemEval — gateway-backed non-Anthropic clients', () => {
+  test('routes both answer generation and extraction through DeepSeek', async () => {
+    const model = 'deepseek:deepseek-v4-flash';
+    const calls: Array<{ maxOutputTokens?: number; providerOptions?: Record<string, any>; system?: unknown }> = [];
+
+    resetGateway();
+    __setGenerateTextTransportForTests(async (args: any) => {
+      calls.push(args);
+      const text = String(args.system).startsWith('You extract typed claims')
+        ? '[]'
+        : 'gateway-deepseek-answer';
+      return {
+        text,
+        content: [{ type: 'text', text }],
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 1 },
+      } as any;
+    });
+    configureGateway({
+      chat_model: model,
+      provider_chat_options: {
+        [model]: { thinking: { type: 'disabled' } },
+      },
+      env: { DEEPSEEK_API_KEY: 'fake' },
+    });
+
+    try {
+      await withEnv({ ANTHROPIC_API_KEY: undefined, GBRAIN_MODEL: model }, async () => {
+        await runEvalLongMemEval(
+          [datasetPath, '--keyword-only', '--limit', '1', '--model', model, '--output', outputPath],
+        );
+      });
+
+      expect(calls).toHaveLength(2);
+      expect(calls.map(call => call.maxOutputTokens)).toEqual([2000, 512]);
+      expect(calls.every(call => call.providerOptions?.deepseek?.thinking?.type === 'disabled')).toBe(true);
+      expect(calls.some(call => String(call.system).startsWith('You extract typed claims'))).toBe(true);
+      expect(calls.some(call => String(call.system).includes('UNTRUSTED user-generated data'))).toBe(true);
+      const row = readOutput()[0];
+      expect(row.hypothesis).toBe('gateway-deepseek-answer');
+      expect(row.methodology_note).toBe(
+        'extractor=deepseek:deepseek-v4-flash-preprocess-full-haystack-v2',
+      );
+    } finally {
+      __setGenerateTextTransportForTests(null);
+      resetGateway();
+    }
+  }, 60_000);
+});
+
 describe('runEvalLongMemEval — --no-trajectory bypasses both extractor and injection', () => {
   test('--no-trajectory: extractor never called, no trajectory block, envelope omits new fields', async () => {
     const state: StubState = { answerCalls: [], extractorCalls: 0 };
     const { answerClient, extractorClient } = stubClients(state);
-    await runEvalLongMemEval(
-      [datasetPath, '--keyword-only', '--no-trajectory', '--output', outputPath],
-      { client: answerClient, extractorClient, extractorModel: 'stub' },
-    );
+    await withEnv({ GBRAIN_MODEL: undefined }, async () => {
+      await runEvalLongMemEval(
+        [datasetPath, '--keyword-only', '--no-trajectory', '--output', outputPath],
+        { client: answerClient, extractorClient },
+      );
+    });
     expect(state.extractorCalls).toBe(0);
     expect(state.answerCalls.length).toBe(2);
     expect(state.answerCalls[0]).not.toContain('Known trajectory:');
@@ -184,10 +244,12 @@ describe('runEvalLongMemEval — methodology_note presence', () => {
   test('default run stamps methodology_note on every routed row', async () => {
     const state: StubState = { answerCalls: [], extractorCalls: 0 };
     const { answerClient, extractorClient } = stubClients(state);
-    await runEvalLongMemEval(
-      [datasetPath, '--keyword-only', '--output', outputPath],
-      { client: answerClient, extractorClient, extractorModel: 'stub' },
-    );
+    await withEnv({ GBRAIN_MODEL: undefined }, async () => {
+      await runEvalLongMemEval(
+        [datasetPath, '--keyword-only', '--output', outputPath],
+        { client: answerClient, extractorClient },
+      );
+    });
     const out = readOutput();
     for (const row of out) {
       expect(row.methodology_note).toBe('extractor=haiku-preprocess-full-haystack-v1');
@@ -209,10 +271,12 @@ describe('runEvalLongMemEval — perf gate preserved', () => {
     const state: StubState = { answerCalls: [], extractorCalls: 0 };
     const { answerClient, extractorClient } = stubClients(state);
     const start = Date.now();
-    await runEvalLongMemEval(
-      [datasetPath, '--keyword-only', '--output', outputPath],
-      { client: answerClient, extractorClient, extractorModel: 'stub' },
-    );
+    await withEnv({ GBRAIN_MODEL: undefined }, async () => {
+      await runEvalLongMemEval(
+        [datasetPath, '--keyword-only', '--output', outputPath],
+        { client: answerClient, extractorClient },
+      );
+    });
     const elapsed = Date.now() - start;
     expect(elapsed).toBeLessThan(PERF_CEILING_MS);
   }, 90_000);
