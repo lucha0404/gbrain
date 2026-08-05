@@ -2565,7 +2565,7 @@ export async function expand(query: string): Promise<string[]> {
     const cfg = requireConfig();
     const providerOptions: Record<string, any> = {};
     applyConfiguredProviderOptions(providerOptions, cfg, recipe.id, modelId);
-    applyDeepSeekThinkingSafety(providerOptions, recipe.id);
+    applyDeepSeekThinkingSafety(providerOptions, recipe.id, modelId);
     const configuredProviderOptions = Object.keys(providerOptions).length > 0
       ? providerOptions
       : undefined;
@@ -3248,6 +3248,7 @@ function applyConfiguredProviderOptions(
 function applyDeepSeekThinkingSafety(
   providerOptions: Record<string, any>,
   recipeId: string,
+  modelId: string,
   hasTools = false,
 ): void {
   if (recipeId !== 'deepseek') return;
@@ -3263,7 +3264,9 @@ function applyDeepSeekThinkingSafety(
   const thinking = isPlainObject(existing.thinking) ? existing.thinking : undefined;
   if (hasTools && thinking?.type !== 'disabled') {
     throw new AIConfigError(
-      'DeepSeek thinking mode is not supported with gbrain tool loops because reasoning_content is not persisted for replay. Set provider_chat_options.deepseek.thinking.type to "disabled".',
+      `DeepSeek thinking mode is not supported with gbrain tool loops because reasoning_content is not persisted for replay. ` +
+      `Set provider_chat_options.${recipeId}:${modelId}.thinking.type to "disabled" for the resolved model, ` +
+      `or remove that model-scoped override and set provider_chat_options.${recipeId}.thinking.type to "disabled".`,
     );
   }
 }
@@ -3471,7 +3474,7 @@ export async function chat(opts: ChatOpts): Promise<ChatResult> {
     if (promptCacheKey) providerOptions.openai = { promptCacheKey };
   }
   applyConfiguredProviderOptions(providerOptions, cfg, recipe.id, modelId);
-  applyDeepSeekThinkingSafety(providerOptions, recipe.id, !!opts.tools?.length);
+  applyDeepSeekThinkingSafety(providerOptions, recipe.id, modelId, !!opts.tools?.length);
 
   // Derive ONE canonical cache-control value AFTER config merging and reuse
   // it for every breakpoint (system block, last tool def, call-level). If
