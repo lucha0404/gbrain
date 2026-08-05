@@ -30,6 +30,12 @@ describe('computeChunkCharBudget — model-level context limits', () => {
     ).toBe(283_115);
   });
 
+  test('uses a multilingual-safe DeepSeek V4 prompt budget', () => {
+    expect(
+      computeChunkCharBudget('deepseek:deepseek-v4-flash', null),
+    ).toBe(900_000);
+  });
+
   test('keeps generic LiteLLM models on the recipe 200K safe budget', () => {
     expect(
       computeChunkCharBudget('litellm:some-proxied-model', null),

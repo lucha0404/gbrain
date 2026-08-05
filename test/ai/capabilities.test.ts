@@ -48,6 +48,14 @@ describe('getProviderCapabilities (v0.38 Slice 1 — D6/D7 recipe-driven capabil
     expect(caps.supportsPromptCaching).toBe(false);
   });
 
+  it('uses exact model limits for DeepSeek V4 Flash and Pro', () => {
+    for (const model of ['deepseek-v4-flash', 'deepseek-v4-pro']) {
+      const caps = getProviderCapabilities(`deepseek:${model}`);
+      expect(caps.maxContext).toBe(1_000_000);
+      expect(caps.maxOutput).toBe(384_000);
+    }
+  });
+
   it('honors Anthropic alias (undated → dated)', () => {
     const caps = getProviderCapabilities('anthropic:claude-haiku-4-5');
     expect(caps.supportsToolCalling).toBe(true);

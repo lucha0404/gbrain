@@ -52,6 +52,19 @@ const MODEL_TOKEN_LIMIT_OVERRIDES: Readonly<Record<string, ModelTokenLimits>> = 
     maxOutput: 65_536,
     safePromptCharsPerToken: 0.3,
   },
+  // DeepSeek documents roughly 0.6 token per Chinese character. Budgeting at
+  // 1 char/token, then applying Dream's separate 10% headroom, remains
+  // conservative without multiplying long-transcript chunk count 5-6x.
+  'deepseek:deepseek-v4-flash': {
+    maxContext: 1_000_000,
+    maxOutput: 384_000,
+    safePromptCharsPerToken: 1.0,
+  },
+  'deepseek:deepseek-v4-pro': {
+    maxContext: 1_000_000,
+    maxOutput: 384_000,
+    safePromptCharsPerToken: 1.0,
+  },
 };
 
 function exactModelTokenLimits(providerId: string, modelId: string): ModelTokenLimits | undefined {
