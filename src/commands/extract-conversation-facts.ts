@@ -545,7 +545,7 @@ function pageBodyBytes(page: Page): number {
 
 const TYPES_CONFIG_KEY = 'cycle.conversation_facts_backfill.types';
 
-async function resolveTypesFromConfig(
+export async function resolveConversationFactTypes(
   engine: BrainEngine,
   explicit?: AllowedType[],
 ): Promise<AllowedType[]> {
@@ -1184,7 +1184,7 @@ export async function runExtractConversationFactsCore(
     await assertFactsEmbeddingDimMatchesConfig(engine);
   }
 
-  const types = await resolveTypesFromConfig(engine, opts.types);
+  const types = await resolveConversationFactTypes(engine, opts.types);
   const dryRun = !!opts.dryRun;
   const sleepMs = opts.sleepMs ?? DEFAULT_INTER_CALL_SLEEP_MS;
   const segmentLimit = opts.segmentLimit ?? 0;
