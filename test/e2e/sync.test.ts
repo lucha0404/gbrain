@@ -10,10 +10,10 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, unlinkSync, existsSync, readFileSync } from 'fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
-import { tmpdir, homedir } from 'os';
+import { tmpdir } from 'os';
 import {
   hasDatabase, setupDB, teardownDB, getEngine,
 } from './helpers.ts';
@@ -405,27 +405,19 @@ describeE2E('E2E: Git-to-DB Sync Pipeline', () => {
  * chain holds together with a real Postgres engine, real git history, and
  * real frontmatter validation.
  *
- * Owns its own repo + sync-failures.jsonl lifecycle so it can't leak state
- * into the shared describeE2E above. Saves and restores the user's real
- * ~/.gbrain/sync-failures.jsonl so running E2E on a developer machine
- * doesn't trash their local sync state.
+ * Owns its own repo + temporary GBRAIN_HOME so it can't leak failure-ledger
+ * state into the shared describeE2E above or the operator's real brain.
  */
 describeE2E('E2E: sync --skip-failed structured summary loop (v0.22.12, issue #500)', () => {
   let repoPath: string;
-  const realFailuresPath = join(homedir(), '.gbrain', 'sync-failures.jsonl');
-  let savedFailuresContent: string | null = null;
+  let failureHome: string;
+  let previousGbrainHome: string | undefined;
 
   beforeAll(async () => {
+    previousGbrainHome = process.env.GBRAIN_HOME;
+    failureHome = mkdtempSync(join(tmpdir(), 'gbrain-sync-failures-e2e-home-'));
+    process.env.GBRAIN_HOME = failureHome;
     await setupDB();
-
-    // Save+clear the real ~/.gbrain/sync-failures.jsonl so the test starts from
-    // a known-empty state. Restored in afterAll. This file is per-machine, NOT
-    // per-repo, so we have to be defensive about a developer running this
-    // suite on their actual brain machine.
-    if (existsSync(realFailuresPath)) {
-      savedFailuresContent = readFileSync(realFailuresPath, 'utf-8');
-      unlinkSync(realFailuresPath);
-    }
 
     // Fresh git repo with one valid file. Mirrors createTestRepo above but
     // scoped to this describe block.
@@ -441,23 +433,22 @@ describeE2E('E2E: sync --skip-failed structured summary loop (v0.22.12, issue #5
   }, 30_000);
 
   afterAll(async () => {
-    await teardownDB();
-    if (repoPath) rmSync(repoPath, { recursive: true, force: true });
-
-    // Restore the user's real sync-failures.jsonl, if any.
-    if (savedFailuresContent !== null) {
-      mkdirSync(join(homedir(), '.gbrain'), { recursive: true });
-      writeFileSync(realFailuresPath, savedFailuresContent);
-    } else if (existsSync(realFailuresPath)) {
-      // Test wrote one but there was none before. Clean up.
-      unlinkSync(realFailuresPath);
+    try {
+      await teardownDB();
+    } finally {
+      if (repoPath) rmSync(repoPath, { recursive: true, force: true });
+      if (previousGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = previousGbrainHome;
+      if (failureHome) rmSync(failureHome, { recursive: true, force: true });
     }
   });
 
   test('full --skip-failed loop: blocks on bad file, skip advances bookmark, doctor shows code breakdown', async () => {
     const { performSync } = await import('../../src/commands/sync.ts');
-    const { loadSyncFailures, summarizeFailuresByCode } = await import('../../src/core/sync.ts');
+    const { loadSyncFailures, summarizeFailuresByCode, syncFailuresPath } = await import('../../src/core/sync.ts');
     const engine = getEngine();
+
+    expect(syncFailuresPath()).toBe(join(failureHome, '.gbrain', 'sync-failures.jsonl'));
 
     // Step 1: First sync of the clean repo — should succeed.
     let result = await performSync(engine, { repoPath, noPull: true, noEmbed: true });

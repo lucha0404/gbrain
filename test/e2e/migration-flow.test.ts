@@ -62,10 +62,8 @@ if (!SKIP) {
 
 function freshTempHome(label: string) {
   const dir = mkdtempSync(join(tmpdir(), `gbrain-e2e-migration-${label}-`));
-  // preferences.ts's gbrainDir() returns `$HOME/.gbrain` when GBRAIN_HOME
-  // is unset. Test fixtures write to `$dir/.gbrain/...`, so set HOME only
-  // and clear any inherited GBRAIN_HOME (which would route prefs to $dir
-  // directly, no .gbrain suffix).
+  // Exercise the legacy HOME fallback explicitly. An inherited GBRAIN_HOME
+  // would select its own canonical `<GBRAIN_HOME>/.gbrain` tree instead.
   process.env.HOME = dir;
   delete process.env.GBRAIN_HOME;
   // Seed config so Phase A's `gbrain init --migrate-only` has a target.

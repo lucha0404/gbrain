@@ -9,8 +9,8 @@
  *   - DB-path (check #6a): schema is v7+ but `preferences.json` is missing.
  *     Catches installs that never ran the stopgap at all.
  *
- * Invokes the CLI via subprocess against a temp $HOME so the checks see
- * clean fixture state per test.
+ * Invokes the CLI via subprocess against a temp GBRAIN_HOME parent so config
+ * and migration-ledger checks share one clean `<GBRAIN_HOME>/.gbrain` tree.
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
@@ -27,7 +27,7 @@ let origHome: string | undefined;
 function run(args: string[]): { exitCode: number; stdout: string; stderr: string } {
   // Strip DATABASE_URL so doctor runs filesystem-only for these tests.
   // Half-migrated checks run in the filesystem section; no DB needed.
-  const env = { ...process.env, HOME: tmp } as Record<string, string | undefined>;
+  const env = { ...process.env, HOME: tmp, GBRAIN_HOME: tmp } as Record<string, string | undefined>;
   delete env.DATABASE_URL;
   delete env.GBRAIN_DATABASE_URL;
   try {

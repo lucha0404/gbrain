@@ -12,6 +12,7 @@ import {
   preferencesPaths,
   type Preferences,
 } from '../src/core/preferences.ts';
+import { configDir } from '../src/core/config.ts';
 
 let origHome: string | undefined;
 let origGbrainHome: string | undefined;
@@ -21,12 +22,10 @@ beforeEach(() => {
   origHome = process.env.HOME;
   origGbrainHome = process.env.GBRAIN_HOME;
   tmp = mkdtempSync(join(tmpdir(), 'gbrain-prefs-test-'));
-  // preferences.ts's gbrainDir() returns `$HOME/.gbrain` when GBRAIN_HOME
-  // is unset. Test fixtures write to `$tmp/.gbrain/...`, so set HOME only
-  // and clear GBRAIN_HOME — setting GBRAIN_HOME would route prefs to $tmp
-  // directly (no .gbrain suffix), which doesn't match the fixture layout.
+  // GBRAIN_HOME is the parent of `.gbrain`, matching configDir()/gbrainPath().
+  // HOME is also isolated so the explicit fallback test remains hermetic.
   process.env.HOME = tmp;
-  delete process.env.GBRAIN_HOME;
+  process.env.GBRAIN_HOME = tmp;
 });
 
 afterEach(() => {
@@ -56,6 +55,16 @@ describe('validateMinionMode', () => {
 });
 
 describe('loadPreferences', () => {
+  test('GBRAIN_HOME uses the same parent-directory contract as config', () => {
+    expect(preferencesPaths.dir()).toBe(configDir());
+    expect(preferencesPaths.dir()).toBe(join(tmp, '.gbrain'));
+  });
+
+  test('HOME fallback remains available when GBRAIN_HOME is unset', () => {
+    delete process.env.GBRAIN_HOME;
+    expect(preferencesPaths.dir()).toBe(join(tmp, '.gbrain'));
+  });
+
   test('returns empty object when file is missing', () => {
     expect(loadPreferences()).toEqual({});
   });

@@ -11,6 +11,7 @@
 import { readFileSync, writeFileSync, renameSync, chmodSync, mkdtempSync, rmSync, existsSync, mkdirSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { gbrainPath } from './config.ts';
 
 function home(): string {
   // `os.homedir()` in Bun caches its initial value and ignores later
@@ -26,11 +27,11 @@ function home(): string {
 }
 
 /**
- * GBRAIN_HOME-aware override for the .gbrain directory. When the env var
- * is set, this returns it directly (so the directory is GBRAIN_HOME itself,
- * matching the convention `src/core/config.ts:gbrainPath` enforces).
- * When unset, falls back to `<home>/.gbrain` so legacy callers and the
- * doctor's filesystem-only checks keep working.
+ * GBRAIN_HOME-aware override for the .gbrain directory. GBRAIN_HOME is a
+ * parent directory everywhere in gbrain, so delegate the override branch to
+ * the canonical gbrainPath() resolver and append `.gbrain` exactly once.
+ * When unset, retain the HOME-aware fallback used by scripted installs and
+ * the doctor's filesystem-only checks.
  *
  * Without this, `~/.gbrain/migrations/completed.jsonl` is the only path
  * doctor reads on filesystem checks — the test isolation contract that
@@ -38,10 +39,7 @@ function home(): string {
  */
 function gbrainDir(): string {
   const override = process.env.GBRAIN_HOME;
-  if (override) {
-    const trimmed = override.trim();
-    if (trimmed) return trimmed;
-  }
+  if (override?.trim()) return gbrainPath();
   return join(home(), '.gbrain');
 }
 

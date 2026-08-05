@@ -16,7 +16,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, unlinkSync } from 'fs';
+import { existsSync, mkdtempSync, writeFileSync, rmSync, mkdirSync, unlinkSync } from 'fs';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -36,6 +36,8 @@ import { computePoolBudgetCheck } from '../src/commands/doctor.ts';
 
 let engine: PGLiteEngine;
 let repoPath: string;
+let suiteHome: string;
+let previousGbrainHome: string | undefined;
 
 function gitInit(repo: string): void {
   execSync('git init', { cwd: repo, stdio: 'pipe' });
@@ -83,13 +85,22 @@ async function seedCheckpoint(lastCommit: string, target: string, paths: string[
 
 describe('#1794 — resumable incremental sync (pinned target)', () => {
   beforeAll(async () => {
+    suiteHome = mkdtempSync(join(tmpdir(), 'gbrain-1794-home-'));
+    previousGbrainHome = process.env.GBRAIN_HOME;
+    process.env.GBRAIN_HOME = suiteHome;
     engine = new PGLiteEngine();
     await engine.connect({});
     await engine.initSchema();
   }, 60_000);
 
   afterAll(async () => {
-    if (engine) await engine.disconnect();
+    try {
+      if (engine) await engine.disconnect();
+    } finally {
+      if (previousGbrainHome === undefined) delete process.env.GBRAIN_HOME;
+      else process.env.GBRAIN_HOME = previousGbrainHome;
+      if (suiteHome) rmSync(suiteHome, { recursive: true, force: true });
+    }
   }, 60_000);
 
   beforeEach(async () => {
@@ -276,6 +287,13 @@ describe('#1794 — resumable incremental sync (pinned target)', () => {
 
     const res = await performSync(engine, { repoPath, sourceId: sid, noPull: true, noEmbed: true });
     expect(res.status).toBe('blocked_by_failures');
+
+    // This suite intentionally creates a sync failure. Its ledger must stay
+    // under the suite's throwaway home, never the operator's real ~/.gbrain.
+    const { syncFailuresPath } = await import('../src/core/sync.ts');
+    const isolatedLedger = join(suiteHome, '.gbrain', 'sync-failures.jsonl');
+    expect(syncFailuresPath()).toBe(isolatedLedger);
+    expect(existsSync(isolatedLedger)).toBe(true);
 
     // Codex #2: blocked path writes neither last_commit NOR last_sync_at.
     const afterRows = await engine.executeRaw<{ last_commit: string | null; last_sync_at: string | null }>(
