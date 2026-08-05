@@ -58,6 +58,7 @@ describe('doctor command', () => {
       ['models.subagent', 'openai:gpt-5.2'],
       ['models.tier.subagent', 'anthropic:claude-sonnet-4-6'],
       ['models.default', 'anthropic:claude-sonnet-4-6'],
+      ['agent.use_gateway_loop', 'true'],
     ]);
     const check = await checkSubagentCapability({
       async getConfig(key: string): Promise<string | null> {
@@ -74,6 +75,7 @@ describe('doctor command', () => {
     const config = new Map<string, string | null>([
       ['models.subagent', 'anthropic:claude-opus-4-7'],
       ['models.tier.subagent', 'anthropic:claude-haiku-4-5'],
+      ['agent.use_gateway_loop', 'true'],
     ]);
     const check = await checkSubagentCapability({
       async getConfig(key: string): Promise<string | null> {
@@ -88,7 +90,9 @@ describe('doctor command', () => {
     const { checkSubagentCapability } = await import('../src/commands/doctor.ts');
     const check = await checkSubagentCapability({
       async getConfig(key: string): Promise<string | null> {
-        return key === 'models.subagent' ? 'deepseek:deepseek-v4-flash' : null;
+        if (key === 'models.subagent') return 'deepseek:deepseek-v4-flash';
+        if (key === 'agent.use_gateway_loop') return 'true';
+        return null;
       },
     } as any);
     expect(check.status).toBe('ok');
@@ -101,6 +105,7 @@ describe('doctor command', () => {
     const config = new Map<string, string | null>([
       ['models.tier.subagent', 'anthropic:claude-sonnet-4-6'],
       ['models.default', 'openai:gpt-5.2'],
+      ['agent.use_gateway_loop', 'true'],
     ]);
     const check = await checkSubagentCapability({
       async getConfig(key: string): Promise<string | null> {
