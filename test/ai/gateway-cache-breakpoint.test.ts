@@ -184,7 +184,12 @@ describe('gbrain#2490 — Anthropic cache breakpoint placement', () => {
     });
 
     expect(captured.system).toBe('stable prefix');
-    expect(captured.providerOptions).toBeUndefined();
+    // DeepSeek caching is automatic, so no explicit cache marker is added.
+    // The provider option here is the separate tool-loop safety default: V4
+    // thinking must stay disabled unless reasoning_content replay is supported.
+    expect(captured.providerOptions).toEqual({
+      deepseek: { thinking: { type: 'disabled' } },
+    });
     expect(captured.tools.search.providerOptions).toBeUndefined();
     expect(captured.headers).toBeUndefined();
   });
