@@ -19,6 +19,9 @@
  */
 
 import { describe, test, expect } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   runPhaseGradeTakes,
   parseJudgeOutput,
@@ -28,6 +31,7 @@ import {
   type JudgeFn,
   type EvidenceRetrieverFn,
 } from '../src/core/cycle/grade-takes.ts';
+import { BudgetMeter } from '../src/core/cycle/budget-meter.ts';
 import type { OperationContext } from '../src/core/operations.ts';
 import type { BrainEngine, Take, TakeResolution } from '../src/core/engine.ts';
 
@@ -332,6 +336,42 @@ describe('runPhaseGradeTakes — phase integration', () => {
 // ─── judge model follows the gateway chat model ─────────────────────
 
 describe('judge model follows the gateway chat model (label = actual)', () => {
+  test('DeepSeek keeps its provider prefix for budget enforcement', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'grade-takes-deepseek-budget-'));
+    const auditPath = join(dir, 'budget.jsonl');
+    try {
+      const takes = [buildTake({ id: 1, sinceDate: '2023-01-01' })];
+      const { engine, captured } = buildMockEngine({ takes });
+      const meter = new BudgetMeter({
+        budgetUsd: 0.0001,
+        phase: 'grade_takes',
+        auditPath,
+      });
+      let judgeCalls = 0;
+      const judge: JudgeFn = async () => {
+        judgeCalls += 1;
+        return { verdict: 'correct', confidence: 0.9, reasoning: 'held' };
+      };
+
+      const result = await runPhaseGradeTakes(buildCtx(engine), {
+        model: 'deepseek:deepseek-v4-flash',
+        meter,
+        judge,
+      });
+
+      expect(judgeCalls).toBe(0);
+      expect((result.details as Record<string, unknown>).budget_exhausted).toBe(true);
+      expect(captured.some(c => c.sql.includes('INSERT INTO take_grade_cache'))).toBe(false);
+      expect(meter.unpricedSubmits).toBe(0);
+
+      const ledger = JSON.parse(readFileSync(auditPath, 'utf8').trim()) as Record<string, unknown>;
+      expect(ledger.event).toBe('submit_denied');
+      expect(ledger.model).toBe('deepseek:deepseek-v4-flash');
+      expect(ledger.estimated_cost_usd).toBeCloseTo(0.00028, 8);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   test('configured chat_model drives the judge hint (full string) and the stored judge_model_id (bare tail)', async () => {
     // Regression: the default judge call previously passed NO model hint
     // (riding the gateway's chat_model) while 'claude-sonnet-4-6' was

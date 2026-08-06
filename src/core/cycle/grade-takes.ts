@@ -410,7 +410,7 @@ class GradeTakesPhase extends BaseCyclePhase {
     // hardcoded value — zero verdict-cache invalidation. A genuinely
     // different chat_model invalidates, which is correct: the judge really
     // changed.
-    const judgeModelId = splitProviderModelId(judgeModelFull).model || judgeModelFull;
+    const storedJudgeModelId = splitProviderModelId(judgeModelFull).model || judgeModelFull;
 
     const useEnsemble = opts.useEnsemble ?? false;
     const ensembleThreshold = opts.ensembleThreshold ?? 0.85;
@@ -452,14 +452,14 @@ class GradeTakesPhase extends BaseCyclePhase {
 
       // Retrieve evidence first — the signature depends on it.
       const evidence = await evidenceRetriever(take, scope);
-      const sig = evidenceSignature(evidence, judgeModelId);
+      const sig = evidenceSignature(evidence, storedJudgeModelId);
 
       // Idempotency: skip when (take_id, prompt_version, judge_model_id, evidence_signature) exists.
       const cached = await engine.executeRaw<{ verdict: string; confidence: number; applied: boolean }>(
         `SELECT verdict, confidence, applied FROM take_grade_cache
          WHERE take_id = $1 AND prompt_version = $2 AND judge_model_id = $3 AND evidence_signature = $4
          LIMIT 1`,
-        [take.id, promptVersion, judgeModelId, sig],
+        [take.id, promptVersion, storedJudgeModelId, sig],
       );
       if (cached.length > 0) {
         result.cache_hits += 1;
@@ -468,7 +468,11 @@ class GradeTakesPhase extends BaseCyclePhase {
 
       // Budget pre-check.
       const budget = this.checkBudget({
-        modelId: judgeModelId,
+        // Pricing is keyed by canonical provider:model. Keep the bare tail
+        // only for the historical cache/storage convention above; feeding it
+        // to BudgetMeter makes non-Anthropic routes look unpriced and silently
+        // disables the cap (for example deepseek-v4-flash).
+        modelId: judgeModelFull,
         estimatedInputTokens: 1200,
         maxOutputTokens: 400,
       });
@@ -491,7 +495,7 @@ class GradeTakesPhase extends BaseCyclePhase {
       }
 
       // T5 — ensemble tiebreaker for borderline single-model verdicts.
-      let recordedJudgeModelId = judgeModelId;
+      let recordedJudgeModelId = storedJudgeModelId;
       let recordedVerdict = verdict;
       let ensembleApplyEligible = false;
       const inBorderlineBand =
@@ -550,7 +554,7 @@ class GradeTakesPhase extends BaseCyclePhase {
       // Compute a NEW evidence_signature when ensemble fires, since the
       // cache composite key includes judge_model_id. (sig was computed
       // against the single-model judge_model_id earlier.)
-      const recordedSig = recordedJudgeModelId === judgeModelId
+      const recordedSig = recordedJudgeModelId === storedJudgeModelId
         ? sig
         : evidenceSignature(evidence, recordedJudgeModelId);
 
